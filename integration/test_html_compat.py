@@ -93,6 +93,15 @@ def test_img_fullscreen_emits_a_tap_overlay():
     assert (o.x, o.y, o.width, o.height) == (10, 10, 100, 80)  # over the image
 
 
+def test_button_action_emits_a_cmd_hit():
+    html = ('<screen width="800" height="480"><layer id="l" z="0">'
+            '<button action="reboot" x="10" y="10" w="100" h="50">Reboot</button>'
+            '</layer></screen>')
+    batch = paint_scene(parse_scene(html))
+    buttons = [c for c in batch if isinstance(c, CreateLayer) and c.interactive]
+    assert len(buttons) == 1 and buttons[0].hit_id == "cmd:reboot"
+
+
 def test_fullscreen_hit_parses_to_an_action():
     from drm_composer import parse_action
     a = parse_action("full:/p/x.jpg")

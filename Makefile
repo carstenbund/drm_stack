@@ -22,5 +22,8 @@ mouse-demo:       ## interactive touch/mouse demo on the REAL display (buttons +
 page-demo:        ## full-chain HTML page-navigation app on the REAL display (slides + app)
 	$(PY) integration/page_demo.py
 
+action-demo:      ## buttons emitting cmd:<action>, with the Dispatcher allowlist (REAL display)
+	$(PY) integration/action_demo.py
+
 clean:            ## drop the venv and generated frames
 	rm -rf $(VENV) integration/*_frame.png
