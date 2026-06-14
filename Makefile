@@ -13,5 +13,8 @@ test:             ## run the stack integration suite
 demo:             ## render the headless end-to-end demo -> integration/stack_frame.png
 	$(PY) integration/stack_demo.py
 
+screen-demo:      ## interactive demo on the REAL display (Enter to step; auto-detects device)
+	$(PY) integration/screen_demo.py
+
 clean:            ## drop the venv and generated frames
 	rm -rf $(VENV) integration/*_frame.png

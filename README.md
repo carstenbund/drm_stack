@@ -87,6 +87,28 @@ Note: run the `pytest` console script (what `make test` does), **not**
 `python -m pytest` from the repo root — `-m` puts the cwd on `sys.path`, where
 the `drm_screen/` clone shadows the installed `drm_screen` package.
 
+### On-screen demo (real display)
+
+`make test` is headless.  To verify on an **actual panel**, step through a
+visual demo — each scene waits for Enter:
+
+```bash
+make screen-demo                                          # auto-detect device
+.venv/bin/python integration/screen_demo.py --device /dev/dri/card0
+.venv/bin/python integration/screen_demo.py --device dummy --no-wait   # smoke test
+```
+
+It walks solid fill → R/G/B bars → gradient → HTML scene → alpha overlay →
+z-order → hide/show → animated move → clear.  **Step 1 is the key check: a red
+screen must look red** — if it's blue, the RGBA→BGRA boundary is broken.
+
+Requirements:
+- Permission to open `/dev/dri/cardN` — be in the `video` group (`sudo usermod
+  -aG video $USER`, then re-login) or run via `sudo`.
+- No compositor holding the DRM master lock.  If X11/Wayland is running, switch
+  to a text console (Ctrl+Alt+F3) or stop the compositor; `drm-list-modes`
+  reports who holds master.  Otherwise writes are silently ignored.
+
 ## Layout
 
 ```
