@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """Interactive on-screen demo — renders to the ACTUAL DRM display.
 
-Steps through a series of visual scenes across the full stack
-(drm_composer -> drm_screen -> drm_display).  Each step waits for you to press
-Enter before it is shown, so you can eyeball the real panel.
+Steps through visual scenes across the full stack
+(drm_composer -> drm_screen -> drm_display).  Each scene draws its own caption
+and prompt as an on-screen bar at the bottom, so the demo is fully readable on a
+text console where the DRM output covers the terminal.  Press Enter to advance.
 
     .venv/bin/python integration/screen_demo.py          # auto-detect real display
     .venv/bin/python integration/screen_demo.py --device /dev/dri/card0
     .venv/bin/python integration/screen_demo.py --device dummy --no-wait   # smoke test
 
 Real-display notes:
-  * You must be able to open /dev/dri/cardN — be in the `video` group or run
-    via sudo.
-  * If a compositor (X11/Wayland) holds the DRM master lock, writes are
-    ignored.  Run from a text console (Ctrl+Alt+F3) or stop the compositor.
+  * You must be able to open /dev/dri/cardN — be in the `video` group or sudo.
+  * If a compositor (X11/Wayland) holds the DRM master lock, writes are ignored.
+    Run from a text console (Ctrl+Alt+F3) or stop the compositor;
     `drm-list-modes` shows who holds master.
-  * The most important check is step 1: a RED screen must look RED.  If it is
-    BLUE, the RGBA->BGRA boundary is wrong.
+  * Step 1 is the key check: a RED screen must look RED.  If it is BLUE, the
+    RGBA->BGRA boundary is wrong.
 """
 
 import argparse
@@ -31,6 +31,8 @@ from drm_screen.commands import (
     CreateLayer, PlaceRawBuffer, DeleteLayer, HideLayer, ShowLayer, SetPosition,
 )
 from drm_composer import Compositor
+
+HUD_Z = 9999      # caption bar always on top
 
 
 # ── small drawing helpers (RGBA throughout) ───────────────────────────────────
@@ -86,15 +88,10 @@ class Demo:
         self.H = service.backend.height
         self.interactive = interactive
         self.step_no = 0
+        self.size = max(18, self.W // 45)
+        self.hud_h = self.size * 2 + 30
 
-    def pause(self, prompt):
-        if self.interactive:
-            try:
-                input(f"    >> {prompt} (Enter) ")
-            except EOFError:
-                self.interactive = False
-        else:
-            print(f"    >> {prompt} (auto)")
+    # ── plumbing ──────────────────────────────────────────────────────────────
 
     def show(self, batch):
         self.target.submit(batch)
@@ -103,39 +100,62 @@ class Demo:
     def reset(self, *names):
         self.show([DeleteLayer(n) for n in names])
 
-    def step(self, title, look_for):
-        self.step_no += 1
-        print(f"\n[{self.step_no}] {title}")
-        print(f"    look for: {look_for}")
-        self.pause("show it")
+    def _hud_bitmap(self, title, look_for, prompt):
+        img = Image.new("RGBA", (self.W, self.hud_h), (0, 0, 0, 205))
+        d = ImageDraw.Draw(img)
+        f1, f2 = _font(self.size), _font(self.size - 3)
+        d.line([(0, 0), (self.W, 0)], fill=(127, 208, 255, 255), width=2)
+        d.text((20, 8), title, fill=(255, 255, 255, 255), font=f1)
+        # prompt, right-aligned on the title row
+        pw = d.textlength(prompt, font=f1)
+        d.text((self.W - 20 - pw, 8), prompt, fill=(250, 220, 120, 255), font=f1)
+        d.text((20, 12 + self.size), f"look for: {look_for}",
+               fill=(178, 200, 222, 255), font=f2)
+        return np.asarray(img, dtype=np.uint8)
 
-    # ── individual scenes ─────────────────────────────────────────────────────
+    def hud(self, title, look_for, prompt):
+        bmp = self._hud_bitmap(title, look_for, prompt)
+        self.show(raw_layer("hud", bmp, self.W, self.H,
+                            z=HUD_Z, x=0, y=self.H - self.hud_h))
+
+    def present(self, title, look_for, batch, prompt="Press ENTER  ▶"):
+        """Render a scene, overlay its caption bar, then wait for Enter."""
+        self.step_no += 1
+        title = f"[{self.step_no}]  {title}"
+        print(f"{title} — {look_for}")
+        if batch:
+            self.show(batch)
+        self.hud(title, look_for, prompt)
+        if self.interactive:
+            try:
+                input()
+            except EOFError:
+                self.interactive = False
+
+    # ── scenes ────────────────────────────────────────────────────────────────
 
     def run(self):
         W, H = self.W, self.H
-        print(f"\nDisplay {W}x{H} — stepping through the stack.\n")
+        print(f"\nDisplay {W}x{H} — captions are drawn on-screen at the bottom.\n")
 
-        self.step("Solid RED fill",
-                  "the WHOLE screen is red. If it's BLUE, RGBA->BGRA is wrong.")
-        self.show(raw_layer("c", solid(W, H, (220, 30, 30, 255)), W, H))
+        self.present("Solid RED fill",
+                     "the WHOLE screen red. If it's BLUE, RGBA->BGRA is wrong.",
+                     raw_layer("c", solid(W, H, (220, 30, 30, 255)), W, H))
+        self.reset("c")
 
-        self.step("R / G / B bars (channel-order check)",
-                  "three vertical bars, labelled, in the right colours.")
         bw = W // 3
-        self.show(
-            raw_layer("r", labelled(bw, H, (220, 30, 30, 255), "RED"), W, H, z=1, x=0)
-            + raw_layer("g", labelled(bw, H, (30, 200, 30, 255), "GREEN"), W, H, z=1, x=bw)
-            + raw_layer("b", labelled(W - 2 * bw, H, (40, 80, 230, 255), "BLUE"), W, H, z=1, x=2 * bw)
-        )
-        self.reset("c", "r", "g", "b")
+        self.present("R / G / B bars (channel-order check)",
+                     "three labelled bars in the right colours",
+                     raw_layer("r", labelled(bw, H, (220, 30, 30, 255), "RED"), W, H, z=1, x=0)
+                     + raw_layer("g", labelled(bw, H, (30, 200, 30, 255), "GREEN"), W, H, z=1, x=bw)
+                     + raw_layer("b", labelled(W - 2 * bw, H, (40, 80, 230, 255), "BLUE"), W, H, z=1, x=2 * bw))
+        self.reset("r", "g", "b")
 
-        self.step("Gradient",
-                  "a smooth red(L->R) / green(T->B) gradient, no banding/tearing.")
-        self.show(raw_layer("grad", gradient(W, H), W, H))
+        self.present("Gradient",
+                     "smooth red(L->R) / green(T->B), no banding or tearing",
+                     raw_layer("grad", gradient(W, H), W, H))
         self.reset("grad")
 
-        self.step("HTML scene via drm_composer",
-                  "dark-blue background, translucent status card, white text.")
         self.composer.render_html(f"""
           <screen width="{W}" height="{H}">
             <layer id="bg" z="0"><box x="0" y="0" w="{W}" h="{H}" color="#141e3c"/></layer>
@@ -144,43 +164,44 @@ class Demo:
               <text x="{W//12+30}" y="{H//6+30}" size="40" color="#ffffff">System ready</text>
             </layer>
           </screen>""")
+        self.present("HTML scene via drm_composer",
+                     "dark-blue background, translucent card, white text", [])
 
-        self.step("Alpha overlay",
-                  "the whole scene dims under a 60% black wash (card still visible).")
-        self.show(raw_layer("dim", solid(W, H, (0, 0, 0, 150)), W, H, z=50))
+        self.present("Alpha overlay",
+                     "the scene dims under a black wash (card still visible)",
+                     raw_layer("dim", solid(W, H, (0, 0, 0, 150)), W, H, z=50))
         self.reset("dim")
 
-        self.step("Z-order",
-                  "a BLUE box drawn on TOP of a RED box (blue wins the overlap).")
-        self.show(
-            raw_layer("red", solid(W // 2, H // 2, (220, 30, 30, 255)), W, H, z=20, x=W//6, y=H//6)
-            + raw_layer("blue", solid(W // 2, H // 2, (40, 80, 230, 255)), W, H, z=30, x=W//3, y=H//3)
-        )
+        self.present("Z-order",
+                     "a BLUE box on TOP of a RED box (blue wins the overlap)",
+                     raw_layer("red", solid(W // 2, H // 2, (220, 30, 30, 255)), W, H, z=20, x=W//6, y=H//6)
+                     + raw_layer("blue", solid(W // 2, H // 2, (40, 80, 230, 255)), W, H, z=30, x=W//3, y=H//3))
 
-        self.step("Hide the blue box", "the blue box disappears; red shows through.")
-        self.show([HideLayer("blue")])
-        self.step("Show it again", "the blue box returns on top.")
-        self.show([ShowLayer("blue")])
+        self.present("Hide the blue box", "blue disappears; red shows through",
+                     [HideLayer("blue")])
+        self.present("Show it again", "blue returns on top", [ShowLayer("blue")])
         self.reset("bg", "card", "red", "blue")
 
-        self.step("Animated move (partial updates)",
-                  "a box sweeps left->right smoothly.")
-        self.show(raw_layer("mv", solid(120, 120, (250, 200, 0, 255)), W, H, z=5, x=0, y=H//2-60))
+        self.present("Animated move (partial updates)",
+                     "a box sweeps left -> right smoothly",
+                     raw_layer("mv", solid(120, 120, (250, 200, 0, 255)), W, H, z=5, x=0, y=H//2-60),
+                     prompt="ENTER to animate  ▶")
         frames = 60 if self.interactive else 4
         for i in range(frames + 1):
-            x = int((W - 120) * i / frames)
-            self.show([SetPosition("mv", x, H // 2 - 60)])
+            self.show([SetPosition("mv", int((W - 120) * i / frames), H // 2 - 60)])
             if self.interactive:
                 time.sleep(0.016)
         self.reset("mv")
 
-        self.step("Clear to black", "the screen goes black — demo complete.")
-        self.service.backend.screen.clear()
+        self.present("Clear to black", "the screen goes black — demo complete",
+                     raw_layer("blk", solid(W, H, (0, 0, 0, 255)), W, H, z=9000),
+                     prompt="ENTER to exit")
         print("\nDone.")
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--device", default=None,
                     help="DRM device, /dev/fb0, or 'dummy' (default: auto-detect)")
     ap.add_argument("--width", type=int, default=None, help="force width (no-EDID panels)")
