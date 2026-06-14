@@ -1,13 +1,16 @@
 # drm_stack
 
-A lightweight screen manager that receives declarative scenes and renders them
-directly to a Linux display via DRM/KMS — no X11, Wayland, or browser engine.
+A lightweight screen manager that receives declarative scenes, renders them
+directly to a Linux display via DRM/KMS, and takes touch/mouse input — no X11,
+Wayland, or browser engine.
 
-This is the **umbrella repo**: stack-level docs, a dev bootstrap, and an
-integration demo.  The three packages live in their own repos (cloned in by
-`setup.sh`); this repo never tracks their contents.
+This is the **umbrella repo**: stack-level docs, a dev bootstrap, and the
+integration tests + demos.  The four packages live in their own repos (cloned in
+by `setup.sh`); this repo never tracks their contents.
 
 ## The stack
+
+**Output** — declarative scene to pixels:
 
 ```
 Application
@@ -19,14 +22,26 @@ drm_screen     layers → composited RGBA frame             (stateful service)
 drm_display    frame → DRM/KMS pixels                      (hardware backend)
 ```
 
+**Input** — pointer to action (the mirror; the app is the hub):
+
+```
+drm_touch      touchscreen / mouse (evdev) → TouchEvents   (low-level input)
+   ↓  app queue
+Application    drm_screen.hit_test() query → app logic → submit()
+   ↓
+drm_screen     hit-testing + autonomous cursor overlay
+```
+
 | Package | Role | Owns | Never does | Repo |
 |---|---|---|---|---|
 | [`drm_composer`](https://github.com/carstenbund/drm_composer) | scene-to-command compiler | parse HTML, layout, rasterize to RGBA, emit commands | hold screen state, blend, touch DRM | drm_composer |
-| [`drm_screen`](https://github.com/carstenbund/drm_screen) | screen manager / service | persistent layers, **compositing**, command API, render loop | parse HTML, touch DRM | drm_screen |
+| [`drm_screen`](https://github.com/carstenbund/drm_screen) | screen manager / service | persistent layers, **compositing**, **hit-testing**, command API, render loop | parse HTML, touch DRM, hold app logic | drm_screen |
 | [`drm_display`](https://github.com/carstenbund/drm_display) | low-level output | DRM/KMS, framebuffer, headless backends | anything above pixels | drm_display |
+| [`drm_touch`](https://github.com/carstenbund/drm_touch) | low-level input | evdev touch/mouse, calibration, normalized `TouchEvent`s | hit-test, render, app logic | drm_touch |
 
-`drm_display` is also an independently published library (PyPI: `drm-display`);
-the other two depend downward only.
+`drm_display` is independently published (PyPI: `drm-display`, MIT); the others
+are GPL-3.0-or-later and depend inward only.  `drm_touch` needs only `evdev` (plus
+`drm_screen`'s command contract at runtime).
 
 ## Design invariants
 
@@ -60,24 +75,34 @@ rots:
    Python now, Rust-ready protocol; revisit only if sustained high fps or a
    single-binary embedded deployment becomes a hard requirement.)
 
+6. **Input mirrors output; the app stays in control.**  `drm_touch` reads the
+   pointer (touchscreen, else mouse — via evdev) and emits source-agnostic,
+   screen-pixel `TouchEvent`s.  They flow to the **app**, which queries
+   `drm_screen.hit_test()` and submits feedback — `drm_screen` holds no callbacks
+   or app logic.  The single raw→pixel mapping lives in `drm_touch` (the input
+   twin of the RGBA→BGRA boundary).  The cursor overlay is fed straight to the
+   render queue, so it stays smooth regardless of app-loop latency (INT 33h-style).
+
 ## Quick start
 
 ```bash
 git clone https://github.com/carstenbund/drm_stack
 cd drm_stack
-./setup.sh                          # clones the 3 packages + editable-installs into .venv
+./setup.sh                          # clones the packages + editable-installs into .venv
 source .venv/bin/activate
 python integration/stack_demo.py    # headless end-to-end; writes integration/stack_frame.png
 ```
 
 `setup.sh` is idempotent: existing package clones are left as-is, only missing
-ones are cloned.
+ones are cloned.  It installs the four packages in dependency order
+(`drm_display → drm_screen → drm_touch → drm_composer`).
 
 ## Testing
 
-The umbrella is where the three packages are tested *together* — the boundaries
-no single repo can cover (HTML→command contract, command→composite, the
-RGBA→BGRA hardware boundary).  All headless, no display required.
+The umbrella is where the packages are tested *together* — the boundaries no
+single repo can cover (HTML→command contract, command→composite, the RGBA→BGRA
+hardware boundary, and the input path: `drm_touch`→`hit_test`→cursor overlay).
+All headless, no display or input hardware required.
 
 ```bash
 make test                  # or: .venv/bin/pytest -q
@@ -109,20 +134,40 @@ Requirements:
   to a text console (Ctrl+Alt+F3) or stop the compositor; `drm-list-modes`
   reports who holds master.  Otherwise writes are silently ignored.
 
+### Touch / mouse demo (real input)
+
+Interactive buttons + a live cursor, driven by a touchscreen or, as a fallback,
+your mouse:
+
+```bash
+make mouse-demo                                        # auto-detects the pointer
+.venv/bin/python integration/mouse_demo.py --selftest  # headless, scripted (no hardware)
+python -m drm_touch                                    # list input devices + show the pick
+python -m drm_touch --watch                            # print live events (diagnostics)
+```
+
+Also needs the **`input`** group (`sudo usermod -aG input $USER`, then re-login)
+to read `/dev/input/event*`.  `drm_touch` auto-detects: touchscreen → composite
+(VMs that split motion/buttons) → absolute pointer → mouse.
+
 ## Layout
 
 ```
 drm_stack/
   README.md                 # this file — the canonical stack overview
   setup.sh                  # clone + editable-install bootstrap
-  Makefile                  # setup / test / demo / clean targets
+  Makefile                  # setup / test / demo / screen-demo / mouse-demo / clean
   pytest.ini                # integration test config
   integration/
     conftest.py             # headless fixtures (synchronous render)
-    test_pipeline.py        # cross-package integration tests
-    stack_demo.py           # end-to-end demo across all three packages
+    test_pipeline.py        # output-path integration tests
+    test_input.py           # input-path integration tests (drm_touch → hit_test)
+    stack_demo.py           # headless end-to-end demo (HTML → display)
+    screen_demo.py          # interactive output demo (real display, Enter to step)
+    mouse_demo.py           # interactive input demo (real display, touch/mouse)
   drm_display/   (cloned, untracked here)
   drm_screen/    (cloned, untracked here)
+  drm_touch/     (cloned, untracked here)
   drm_composer/  (cloned, untracked here)
 ```
 
