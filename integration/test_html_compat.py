@@ -81,6 +81,24 @@ def test_image_fit_modes_preserve_aspect():
     assert _fit_image(src, 80, 80, "fill").size == (80, 80)  # stretched
 
 
+def test_img_fullscreen_emits_a_tap_overlay():
+    html = ('<screen width="800" height="480"><layer id="l" z="0">'
+            '<img src="/p/x.jpg" x="10" y="10" w="100" h="80" fullscreen/>'
+            '</layer></screen>')
+    batch = paint_scene(parse_scene(html))
+    overlays = [c for c in batch if isinstance(c, CreateLayer) and c.interactive]
+    assert len(overlays) == 1
+    o = overlays[0]
+    assert o.hit_id == "full:/p/x.jpg"                       # carries the src
+    assert (o.x, o.y, o.width, o.height) == (10, 10, 100, 80)  # over the image
+
+
+def test_fullscreen_hit_parses_to_an_action():
+    from drm_composer import parse_action
+    a = parse_action("full:/p/x.jpg")
+    assert a.kind == "fullscreen" and a.target == "/p/x.jpg"
+
+
 def test_a_scene_with_messy_values_still_parses():
     # units, percents, a CSS name, and a typo'd color — no exception
     html = ('<screen width="200" height="100"><layer id="l" z="0">'

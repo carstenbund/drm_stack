@@ -112,34 +112,10 @@ def page_imgslide(n):
         <screen width="{W}" height="{H}">
           <layer id="bg" z="0">
             <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
-            <text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS}</text>
-            <a href="full{n}.html" x="84%" y="2%" w="14%" h="7%" size="18" color="#2a3a4a">Fullscreen</a>
-            <img src="{src}" x="2%" y="8%" w="96%" h="78%" fit="contain"/>
+            <text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS} — tap the image for fullscreen</text>
+            <img src="{src}" x="2%" y="8%" w="96%" h="78%" fit="contain" fullscreen/>
             <button id="back" x="2%" y="89%" w="15%" h="9%" size="20" color="#444c5c">&#9664; Back</button>
             <a href="{href}" x="83%" y="89%" w="15%" h="9%" size="20" color="{color}">{label}</a>
-          </layer>
-        </screen>"""
-    return build
-
-
-def page_full(n):
-    """Fullscreen photo: image edge-to-edge, no visible chrome. Navigation is by
-    invisible tap zones — top = exit, left = prev, right = next (looping)."""
-    def build(W, H):
-        src = os.path.join(IMG_DIR, f"image{n}.jpg")
-        prev = f"full{n - 1 if n > 1 else N_PHOTOS}.html"      # wrap
-        nxt = f"full{n + 1 if n < N_PHOTOS else 1}.html"
-        return f"""
-        <screen width="{W}" height="{H}">
-          <layer id="bg" z="0">
-            <box x="0" y="0" w="100%" h="100%" color="#000000"/>
-            <img src="{src}" x="0" y="0" w="100%" h="100%" fit="contain"/>
-            <text x="34%" y="96%" size="15" color="#39414c">tap — left: back · right: next · top: exit</text>
-          </layer>
-          <layer id="zones" z="10">
-            <a href="imgslide{n}.html" x="0"   y="0"   w="100%" h="12%" color="#00000000"/>
-            <a href="{prev}"           x="0"   y="12%" w="30%"  h="84%" color="#00000000"/>
-            <a href="{nxt}"            x="30%" y="12%" w="70%"  h="84%" color="#00000000"/>
           </layer>
         </screen>"""
     return build
@@ -181,7 +157,6 @@ PAGES = {
     "settings": lambda W, H: _content(W, H, "Settings", "Back restores the menu (history pop)."),
     "about": lambda W, H: _content(W, H, "About", "Built entirely from the drm-stack."),
     **{f"imgslide{n}": page_imgslide(n) for n in range(1, N_PHOTOS + 1)},
-    **{f"full{n}": page_full(n) for n in range(1, N_PHOTOS + 1)},
 }
 
 
@@ -201,6 +176,7 @@ class PageApp:
         # allowlist — only these handlers can fire (unknown hits are no-ops).
         self.dispatch = (Dispatcher()
                          .on_navigate(lambda target: self.goto(self._page_name(target)))
+                         .on_fullscreen(self.show_fullscreen)
                          .on_action("back", self.back)
                          .on_action("quit", self._quit))
 
@@ -220,6 +196,21 @@ class PageApp:
     def back(self):
         if self.history:
             self.goto(self.history.pop(), push=False)
+
+    def show_fullscreen(self, src):
+        """Show one image edge-to-edge; tap anywhere (the back overlay) to exit."""
+        self.history.append(self.current)
+        self.current = "__full__"
+        self._load(f"""
+        <screen width="{self.W}" height="{self.H}">
+          <layer id="bg" z="0">
+            <box x="0" y="0" w="100%" h="100%" color="#000000"/>
+            <img src="{src}" x="0" y="0" w="100%" h="100%" fit="contain"/>
+          </layer>
+          <layer id="ov" z="10">
+            <button id="back" x="0" y="0" w="100%" h="100%" color="#00000000"/>
+          </layer>
+        </screen>""")
 
     def _quit(self):
         self.running = False
@@ -297,15 +288,19 @@ def run_selftest():
     tap("href:slide1.html");   tap("href:slide2.html"); assert app.current == "slide2"
     tap("back");               assert app.current == "slide1", app.current
     # photo slideshow (placeholders until images are supplied)
-    tap("back");               assert app.current == "home", app.current
+    tap("back");                assert app.current == "home", app.current
     tap("href:imgslide1.html"); assert app.current == "imgslide1", app.current
     tap("href:imgslide2.html"); assert app.current == "imgslide2", app.current
     tap("back");                assert app.current == "imgslide1", app.current
+    # fullscreen: tap the image (full:<src>), then tap anywhere to exit
+    tap("full:" + os.path.join(IMG_DIR, "image1.jpg"))
+    assert app.current == "__full__", app.current
     Image.fromarray(backend.snapshot_rgba(), "RGBA").save(OUT)
+    tap("back");                assert app.current == "imgslide1", app.current  # exit
     tap("back");                assert app.current == "home", app.current
     tap("quit");                assert app.running is False
 
-    print(f"selftest OK — text/photo slideshows + back-restore verified -> {OUT}")
+    print(f"selftest OK — slideshows + fullscreen + back-restore verified -> {OUT}")
     service.stop()
     return 0
 
