@@ -33,17 +33,17 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_frame.png")
 
 # ── pages: name -> builder(W, H) -> screen-HTML ───────────────────────────────
 
-def _bar(W, H, back=False, right=None):
-    """Bottom button bar: optional Back (left) and a right-hand action."""
+def _bar(W, H, back=False, link=None):
+    """Bottom bar: optional Back <button> (an action) + right-hand <a> (a link)."""
     bw, bh, pad = 220, 64, 30
     out = ""
     if back:
         out += (f'<button id="back" x="{pad}" y="{H - bh - pad}" w="{bw}" h="{bh}" '
                 f'color="#444c5c">&#9664; Back</button>')
-    if right:
-        rid, label, color = right
-        out += (f'<button id="{rid}" x="{W - bw - pad}" y="{H - bh - pad}" '
-                f'w="{bw}" h="{bh}" color="{color}">{label}</button>')
+    if link:
+        href, label, color = link
+        out += (f'<a href="{href}" x="{W - bw - pad}" y="{H - bh - pad}" '
+                f'w="{bw}" h="{bh}" color="{color}">{label}</a>')
     return out
 
 
@@ -56,8 +56,8 @@ def page_home(W, H):
         <box x="0" y="0" w="{W}" h="{H}" color="#0e1422"/>
         <text x="60" y="56" size="46" color="#ffffff">drm_stack — full-chain demo</text>
         <text x="60" y="124" size="22" color="#7fb0d0">HTML page &#8594; composer &#8594; screen &#8594; display, with pointer input</text>
-        <button id="goto:slide1" x="{cx - bw - gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#2a6cae">Slideshow &#9654;</button>
-        <button id="goto:menu" x="{cx + gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#3a8a55">App demo &#9654;</button>
+        <a href="slide1.html" x="{cx - bw - gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#2a6cae">Slideshow &#9654;</a>
+        <a href="menu.html" x="{cx + gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#3a8a55">App demo &#9654;</a>
         <button id="quit" x="{cx - 110}" y="{y + bh + gap}" w="220" h="64" color="#a33a3a">Quit</button>
       </layer>
     </screen>"""
@@ -71,7 +71,7 @@ def _slide(W, H, n, total, title, body, nxt):
         <text x="{W - 150}" y="40" size="22" color="#5a708a">{n} / {total}</text>
         <text x="60" y="80" size="44" color="#ffffff">{title}</text>
         <text x="60" y="170" size="26" color="#cdd6e0">{body}</text>
-        {_bar(W, H, back=True, right=nxt)}
+        {_bar(W, H, back=True, link=nxt)}
       </layer>
     </screen>"""
 
@@ -87,8 +87,8 @@ def page_slide(i):
     def build(W, H):
         title, body = SLIDES[i]
         last = i == len(SLIDES) - 1
-        nxt = (("goto:home", "Finish &#9654;", "#3a8a55") if last
-               else (f"goto:slide{i + 2}", "Next &#9654;", "#2a6cae"))
+        nxt = (("home.html", "Finish &#9654;", "#3a8a55") if last
+               else (f"slide{i + 2}.html", "Next &#9654;", "#2a6cae"))
         return _slide(W, H, i + 1, len(SLIDES), title, body, nxt)
     return build
 
@@ -96,12 +96,12 @@ def page_slide(i):
 def page_menu(W, H):
     bw, bh, gap = 360, 84, 24
     cx, y0 = W // 2 - bw // 2, H // 2 - bh - gap
-    items = [("goto:settings", "Settings", "#3a6ea5"),
-             ("goto:about", "About", "#3a6ea5")]
+    items = [("settings.html", "Settings", "#3a6ea5"),
+             ("about.html", "About", "#3a6ea5")]
     btns = "".join(
-        f'<button id="{bid}" x="{cx}" y="{y0 + k * (bh + gap)}" w="{bw}" h="{bh}" '
-        f'color="{color}">{label}</button>'
-        for k, (bid, label, color) in enumerate(items))
+        f'<a href="{href}" x="{cx}" y="{y0 + k * (bh + gap)}" w="{bw}" h="{bh}" '
+        f'color="{color}">{label}</a>'
+        for k, (href, label, color) in enumerate(items))
     return f"""
     <screen width="{W}" height="{H}">
       <layer id="bg" z="0">
@@ -165,6 +165,11 @@ class PageApp:
         if self.history:
             self.goto(self.history.pop(), push=False)
 
+    @staticmethod
+    def _page_name(href):
+        # an href like "settings.html" names the page "settings"
+        return href[:-5] if href.endswith(".html") else href
+
     def on_event(self, ev):
         if ev.phase != "down":
             return
@@ -175,7 +180,9 @@ class PageApp:
             self.running = False
         elif hit == "back":
             self.back()
-        elif hit.startswith("goto:"):
+        elif hit.startswith("href:"):              # an <a href="..."> link
+            self.goto(self._page_name(hit[len("href:"):]))
+        elif hit.startswith("goto:"):              # a <button id="goto:..."> action
             self.goto(hit[len("goto:"):])
 
     def button_center(self, hit_id):
@@ -233,17 +240,18 @@ def run_selftest():
             app.on_event(app_q.get_nowait())
         service.render_once()
 
-    # branching app + back-restore
-    tap("goto:menu");     assert app.current == "menu", app.current
-    tap("goto:settings"); assert app.current == "settings", app.current
-    tap("back");          assert app.current == "menu", app.current
-    tap("back");          assert app.current == "home", app.current
+    # branching app + back-restore (navigation via <a href>)
+    tap("href:menu.html");     assert app.current == "menu", app.current
+    tap("href:settings.html"); assert app.current == "settings", app.current
+    tap("back");               assert app.current == "menu", app.current
+    tap("back");               assert app.current == "home", app.current
     # slideshow chain
-    tap("goto:slide1");   assert app.current == "slide1", app.current
-    tap("goto:slide2");   assert app.current == "slide2", app.current
-    tap("back");          assert app.current == "slide1", app.current
-    tap("goto:slide2");   tap("goto:slide3"); assert app.current == "slide3", app.current
-    tap("goto:home");     assert app.current == "home", app.current
+    tap("href:slide1.html");   assert app.current == "slide1", app.current
+    tap("href:slide2.html");   assert app.current == "slide2", app.current
+    tap("back");               assert app.current == "slide1", app.current
+    tap("href:slide2.html");   tap("href:slide3.html")
+    assert app.current == "slide3", app.current
+    tap("href:home.html");     assert app.current == "home", app.current
     Image.fromarray(backend.snapshot_rgba(), "RGBA").save(OUT)
     tap("quit");          assert app.running is False
 

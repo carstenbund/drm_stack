@@ -28,6 +28,17 @@ def test_button_compiles_to_interactive_layer():
     assert not page.interactive
 
 
+def test_anchor_compiles_to_link_with_href_hit_id():
+    html = ('<screen width="800" height="480"><layer id="p" z="0">'
+            '<a href="next.html" x="10" y="20" w="120" h="50">Next</a>'
+            '</layer></screen>')
+    batch = paint_scene(parse_scene(html))
+    links = [c for c in batch if isinstance(c, CreateLayer) and c.interactive]
+    assert len(links) == 1
+    # a link reuses the button machinery; its hit_id encodes the href
+    assert links[0].hit_id == "href:next.html"
+
+
 def _app():
     service = ScreenService(DrmDisplayBackend(device="dummy", width=1024, height=600))
     app = page_demo.PageApp(service)
@@ -45,21 +56,21 @@ def _tap(app, hit_id):
 
 def test_navigation_history_and_back_restore():
     app = _app()
-    _tap(app, "goto:menu");     assert app.current == "menu"
-    _tap(app, "goto:settings"); assert app.current == "settings"
-    _tap(app, "back");          assert app.current == "menu"      # restored
-    _tap(app, "back");          assert app.current == "home"      # restored
-    app.back()  # history empty (home has no Back button) -> no-op
+    _tap(app, "href:menu.html");     assert app.current == "menu"
+    _tap(app, "href:settings.html"); assert app.current == "settings"
+    _tap(app, "back");               assert app.current == "menu"   # restored
+    _tap(app, "back");               assert app.current == "home"   # restored
+    app.back()  # history empty (home has no Back) -> no-op
     assert app.current == "home"
 
 
 def test_slideshow_chain_and_quit():
     app = _app()
-    _tap(app, "goto:slide1"); assert app.current == "slide1"
-    _tap(app, "goto:slide2"); assert app.current == "slide2"
-    _tap(app, "back");        assert app.current == "slide1"
-    _tap(app, "quit") if app.button_center("quit") else None  # no quit on slides
-    assert app.running                                         # still running
+    _tap(app, "href:slide1.html"); assert app.current == "slide1"
+    _tap(app, "href:slide2.html"); assert app.current == "slide2"
+    _tap(app, "back");             assert app.current == "slide1"
+    assert app.button_center("quit") is None    # slides have no Quit
+    assert app.running
 
     home = _app()
     assert home.button_center("quit") is not None
