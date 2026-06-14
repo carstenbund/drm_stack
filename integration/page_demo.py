@@ -105,15 +105,17 @@ def page_imgslide(n):
     def build(W, H):
         src = os.path.join(IMG_DIR, f"image{n}.jpg")
         last = n == N_PHOTOS
-        nxt = (("home.html", "Finish &#9654;", "#3a8a55") if last
-               else (f"imgslide{n + 1}.html", "Next &#9654;", "#8a6d3b"))
+        href, label, color = (("home.html", "Finish &#9654;", "#3a8a55") if last
+                              else (f"imgslide{n + 1}.html", "Next &#9654;", "#8a6d3b"))
+        # Photos get a roomier layout: tiny caption, big image, small corner buttons.
         return f"""
         <screen width="{W}" height="{H}">
           <layer id="bg" z="0">
             <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
-            <text x="5%" y="4%" size="26" color="#cdd6e0">Photo {n} / {N_PHOTOS}</text>
-            <img src="{src}" x="8%" y="14%" w="84%" h="62%" fit="contain"/>
-            {_bar(back=True, link=nxt)}
+            <text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS}</text>
+            <img src="{src}" x="2%" y="8%" w="96%" h="78%" fit="contain"/>
+            <button id="back" x="2%" y="89%" w="15%" h="9%" size="20" color="#444c5c">&#9664; Back</button>
+            <a href="{href}" x="83%" y="89%" w="15%" h="9%" size="20" color="{color}">{label}</a>
           </layer>
         </screen>"""
     return build
