@@ -155,13 +155,14 @@ def run_real(args):
         reader.stop()
         backend.screen.clear()
         service.stop()
-    # diagnostics, printed after the display closes
-    print(f"\nscreen {demo.W}x{demo.H}; buttons:")
-    for bid, b in demo.buttons.items():
-        print(f"  {bid:6} x[{b['x']},{b['x'] + b['w']}) y[{b['y']},{b['y'] + b['h']})")
-    print(f"clicks seen: {len(demo.clicks)}")
-    for x, y, hit in demo.clicks[-12:]:
-        print(f"  down ({x},{y}) -> hit={hit}")
+    if args.debug:
+        # diagnostics, printed after the display closes
+        print(f"\nscreen {demo.W}x{demo.H}; buttons:")
+        for bid, b in demo.buttons.items():
+            print(f"  {bid:6} x[{b['x']},{b['x'] + b['w']}) y[{b['y']},{b['y'] + b['h']})")
+        print(f"clicks seen: {len(demo.clicks)}")
+        for x, y, hit in demo.clicks[-12:]:
+            print(f"  down ({x},{y}) -> hit={hit}")
     return 0
 
 
@@ -204,6 +205,8 @@ def main():
                     help="force input source (composite = VMware split abs+rel)")
     ap.add_argument("--selftest", action="store_true",
                     help="headless scripted run (no hardware)")
+    ap.add_argument("--debug", action="store_true",
+                    help="print a click log (coords + hit) on exit")
     args = ap.parse_args()
     return run_selftest() if args.selftest else run_real(args)
 
