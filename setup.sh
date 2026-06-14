@@ -40,6 +40,7 @@ for pkg in "${PACKAGES[@]}"; do
     python -m pip install --quiet -e "./$pkg"
 done
 python -m pip install --quiet pillow   # needed by drm_screen.assets / drm_composer.painter
+python -m pip install --quiet pytest   # dev: stack integration suite
 
 echo "== verify =="
 python - <<'PY'

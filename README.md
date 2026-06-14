@@ -73,13 +73,31 @@ python integration/stack_demo.py    # headless end-to-end; writes integration/st
 `setup.sh` is idempotent: existing package clones are left as-is, only missing
 ones are cloned.
 
+## Testing
+
+The umbrella is where the three packages are tested *together* — the boundaries
+no single repo can cover (HTML→command contract, command→composite, the
+RGBA→BGRA hardware boundary).  All headless, no display required.
+
+```bash
+make test                  # or: .venv/bin/pytest -q
+```
+
+Note: run the `pytest` console script (what `make test` does), **not**
+`python -m pytest` from the repo root — `-m` puts the cwd on `sys.path`, where
+the `drm_screen/` clone shadows the installed `drm_screen` package.
+
 ## Layout
 
 ```
 drm_stack/
   README.md                 # this file — the canonical stack overview
   setup.sh                  # clone + editable-install bootstrap
+  Makefile                  # setup / test / demo / clean targets
+  pytest.ini                # integration test config
   integration/
+    conftest.py             # headless fixtures (synchronous render)
+    test_pipeline.py        # cross-package integration tests
     stack_demo.py           # end-to-end demo across all three packages
   drm_display/   (cloned, untracked here)
   drm_screen/    (cloned, untracked here)
