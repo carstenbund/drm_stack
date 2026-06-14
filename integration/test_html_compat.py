@@ -64,6 +64,23 @@ def test_missing_image_renders_placeholder_not_an_error():
     assert any(isinstance(c, PlaceRawBuffer) for c in batch)
 
 
+def test_image_fit_modes_preserve_aspect():
+    from PIL import Image
+    from drm_composer.painter import _fit_image
+    src = Image.new("RGBA", (100, 50), (255, 0, 0, 255))   # opaque 2:1 image
+
+    contain = _fit_image(src, 80, 80, "contain")           # letterboxed
+    assert contain.size == (80, 80)
+    assert contain.getpixel((40, 0))[3] == 0               # top is transparent bar
+    assert contain.getpixel((40, 40))[3] == 255            # centre is the image
+
+    cover = _fit_image(src, 80, 80, "cover")               # cropped, fully covers
+    assert cover.size == (80, 80)
+    assert cover.getpixel((40, 0))[3] == 255
+
+    assert _fit_image(src, 80, 80, "fill").size == (80, 80)  # stretched
+
+
 def test_a_scene_with_messy_values_still_parses():
     # units, percents, a CSS name, and a typo'd color — no exception
     html = ('<screen width="200" height="100"><layer id="l" z="0">'
