@@ -191,7 +191,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--device", default=None, help="display backend (default: auto)")
     ap.add_argument("--source", default=None,
-                    choices=["touch", "mouse", "dummy"], help="force input source")
+                    choices=["touch", "abs", "mouse", "dummy"],
+                    help="force input source (abs = VMware/absolute pointer)")
     ap.add_argument("--selftest", action="store_true",
                     help="headless scripted run (no hardware)")
     args = ap.parse_args()
