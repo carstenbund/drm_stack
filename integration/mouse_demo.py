@@ -69,6 +69,7 @@ class Demo:
         self.W, self.H = service.backend.width, service.backend.height
         self.running = True
         self.hello_count = 0
+        self.clicks = []          # (x, y, hit) for every 'down' — diagnostics
         # buttons: id -> geometry + look
         cx = self.W // 2
         self.buttons = {
@@ -108,6 +109,7 @@ class Demo:
     def on_event(self, ev):
         if ev.phase == "down":
             hit = self.service.hit_test(ev.x, ev.y)
+            self.clicks.append((ev.x, ev.y, hit))
             if hit:
                 self.press(hit, True)
                 if hit == "hello":
@@ -153,6 +155,13 @@ def run_real(args):
         reader.stop()
         backend.screen.clear()
         service.stop()
+    # diagnostics, printed after the display closes
+    print(f"\nscreen {demo.W}x{demo.H}; buttons:")
+    for bid, b in demo.buttons.items():
+        print(f"  {bid:6} x[{b['x']},{b['x'] + b['w']}) y[{b['y']},{b['y'] + b['h']})")
+    print(f"clicks seen: {len(demo.clicks)}")
+    for x, y, hit in demo.clicks[-12:]:
+        print(f"  down ({x},{y}) -> hit={hit}")
     return 0
 
 
