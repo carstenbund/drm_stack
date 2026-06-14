@@ -28,7 +28,7 @@ from PIL import Image
 
 from drm_screen import DrmDisplayBackend, ScreenService
 from drm_screen.commands import CreateLayer, DeleteLayer
-from drm_composer import Compositor
+from drm_composer import Compositor, parse_action, Dispatcher
 from drm_touch import find_pointer_source, fan_out, TouchReader, TouchEvent
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_frame.png")
@@ -112,7 +112,7 @@ def page_imgslide(n):
           <layer id="bg" z="0">
             <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
             <text x="5%" y="4%" size="26" color="#cdd6e0">Photo {n} / {N_PHOTOS}</text>
-            <img src="{src}" x="8%" y="14%" w="84%" h="62%"/>
+            <img src="{src}" x="8%" y="14%" w="84%" h="62%" fit="contain"/>
             {_bar(back=True, link=nxt)}
           </layer>
         </screen>"""
@@ -170,6 +170,13 @@ class PageApp:
         self.current_layers = []
         self.running = True
 
+        # Composer emits hit_ids; the app is the executor. Registration is the
+        # allowlist — only these handlers can fire (unknown hits are no-ops).
+        self.dispatch = (Dispatcher()
+                         .on_navigate(lambda target: self.goto(self._page_name(target)))
+                         .on_action("back", self.back)
+                         .on_action("quit", self._quit))
+
     def _load(self, html):
         batch = self.compositor.compile(html)
         new_layers = [c.name for c in batch if isinstance(c, CreateLayer)]
@@ -187,6 +194,9 @@ class PageApp:
         if self.history:
             self.goto(self.history.pop(), push=False)
 
+    def _quit(self):
+        self.running = False
+
     @staticmethod
     def _page_name(href):
         return href[:-5] if href.endswith(".html") else href
@@ -194,15 +204,7 @@ class PageApp:
     def on_event(self, ev):
         if ev.phase != "down":
             return
-        hit = self.service.hit_test(ev.x, ev.y)
-        if not hit:
-            return
-        if hit == "quit":
-            self.running = False
-        elif hit == "back":
-            self.back()
-        elif hit.startswith("href:"):              # an <a href="..."> link
-            self.goto(self._page_name(hit[len("href:"):]))
+        self.dispatch.dispatch(parse_action(self.service.hit_test(ev.x, ev.y)))
 
     def button_center(self, hit_id):
         for layer in self.service.composer.layers.values():
