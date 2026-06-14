@@ -19,5 +19,8 @@ screen-demo:      ## interactive demo on the REAL display (Enter to step; auto-d
 mouse-demo:       ## interactive touch/mouse demo on the REAL display (buttons + live cursor)
 	$(PY) integration/mouse_demo.py
 
+page-demo:        ## full-chain HTML page-navigation app on the REAL display (slides + app)
+	$(PY) integration/page_demo.py
+
 clean:            ## drop the venv and generated frames
 	rm -rf $(VENV) integration/*_frame.png
