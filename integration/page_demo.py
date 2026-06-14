@@ -101,24 +101,39 @@ def page_slide(i):
     return build
 
 
-def page_imgslide(n):
-    def build(W, H):
-        src = os.path.join(IMG_DIR, f"image{n}.jpg")
-        last = n == N_PHOTOS
-        href, label, color = (("home.html", "Finish &#9654;", "#3a8a55") if last
-                              else (f"imgslide{n + 1}.html", "Next &#9654;", "#8a6d3b"))
-        # Photos get a roomier layout: tiny caption, big image, small corner buttons.
-        return f"""
-        <screen width="{W}" height="{H}">
-          <layer id="bg" z="0">
-            <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
-            <text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS} — tap the image for fullscreen</text>
-            <img src="{src}" x="2%" y="8%" w="96%" h="78%" fit="contain" fullscreen/>
-            <button id="back" x="2%" y="89%" w="15%" h="9%" size="20" color="#444c5c">&#9664; Back</button>
-            <a href="{href}" x="83%" y="89%" w="15%" h="9%" size="20" color="{color}">{label}</a>
-          </layer>
-        </screen>"""
-    return build
+# Photo pages are built from two SEPARATE layers so fullscreen can re-render the
+# content layer alone, leaving the chrome (controls) layer untouched on top.
+
+def _photo_content(src, full):
+    """The content layer — just the image, framed or fullscreen. z=0."""
+    geom = ('x="0" y="0" w="100%" h="100%"' if full
+            else 'x="2%" y="8%" w="96%" h="78%"')
+    return (f'<layer id="content" z="0">'
+            f'<box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>'
+            f'<img src="{src}" {geom} fit="contain" fullscreen/>'
+            f'</layer>')
+
+
+def _photo_controls(n):
+    """The chrome layer — caption + Fullscreen toggle + Back/Next. z=10 (on top)."""
+    last = n == N_PHOTOS
+    href, label, color = (("home.html", "Finish &#9654;", "#3a8a55") if last
+                          else (f"imgslide{n + 1}.html", "Next &#9654;", "#8a6d3b"))
+    return (f'<layer id="controls" z="10">'
+            f'<text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS} — tap image to toggle fullscreen</text>'
+            f'<button id="fs" x="80%" y="2%" w="17%" h="7%" size="18" color="#2a3a4a">Fullscreen</button>'
+            f'<button id="back" x="2%" y="89%" w="15%" h="9%" size="20" color="#444c5c">&#9664; Back</button>'
+            f'<a href="{href}" x="83%" y="89%" w="15%" h="9%" size="20" color="{color}">{label}</a>'
+            f'</layer>')
+
+
+def _photo_page(n, full, W, H):
+    src = os.path.join(IMG_DIR, f"image{n}.jpg")
+    return f'<screen width="{W}" height="{H}">{_photo_content(src, full)}{_photo_controls(n)}</screen>'
+
+
+def page_menu(W, H):
+    items = [("settings.html", "Settings"), ("about.html", "About")]
 
 
 def page_menu(W, H):
@@ -156,7 +171,8 @@ PAGES = {
     "menu": page_menu,
     "settings": lambda W, H: _content(W, H, "Settings", "Back restores the menu (history pop)."),
     "about": lambda W, H: _content(W, H, "About", "Built entirely from the drm-stack."),
-    **{f"imgslide{n}": page_imgslide(n) for n in range(1, N_PHOTOS + 1)},
+    # imgslide{n} pages are built dynamically by PageApp (they depend on the
+    # persistent fullscreen flag) — see PageApp._render.
 }
 
 
@@ -171,12 +187,14 @@ class PageApp:
         self.current = None
         self.current_layers = []
         self.running = True
+        self.fullscreen = False          # persistent ("global") photo fullscreen
 
         # Composer emits hit_ids; the app is the executor. Registration is the
         # allowlist — only these handlers can fire (unknown hits are no-ops).
         self.dispatch = (Dispatcher()
                          .on_navigate(lambda target: self.goto(self._page_name(target)))
-                         .on_fullscreen(self.show_fullscreen)
+                         .on_fullscreen(lambda src: self.toggle_fullscreen())
+                         .on_action("fs", self.toggle_fullscreen)
                          .on_action("back", self.back)
                          .on_action("quit", self._quit))
 
@@ -191,26 +209,28 @@ class PageApp:
         if push and self.current is not None:
             self.history.append(self.current)
         self.current = name
-        self._load(PAGES[name](self.W, self.H))
+        self._load(self._render(name))
+
+    def _render(self, name):
+        if name.startswith("imgslide"):     # photo page depends on fullscreen state
+            n = int(name[len("imgslide"):])
+            return _photo_page(n, self.fullscreen, self.W, self.H)
+        return PAGES[name](self.W, self.H)
 
     def back(self):
         if self.history:
             self.goto(self.history.pop(), push=False)
 
-    def show_fullscreen(self, src):
-        """Show one image edge-to-edge; tap anywhere (the back overlay) to exit."""
-        self.history.append(self.current)
-        self.current = "__full__"
-        self._load(f"""
-        <screen width="{self.W}" height="{self.H}">
-          <layer id="bg" z="0">
-            <box x="0" y="0" w="100%" h="100%" color="#000000"/>
-            <img src="{src}" x="0" y="0" w="100%" h="100%" fit="contain"/>
-          </layer>
-          <layer id="ov" z="10">
-            <button id="back" x="0" y="0" w="100%" h="100%" color="#00000000"/>
-          </layer>
-        </screen>""")
+    def toggle_fullscreen(self):
+        """Expand/shrink the photo by re-rendering ONLY the content layer — the
+        controls layer (caption, Back/Next, the toggle) is never touched."""
+        if not (self.current or "").startswith("imgslide"):
+            return
+        self.fullscreen = not self.fullscreen
+        n = int(self.current[len("imgslide"):])
+        src = os.path.join(IMG_DIR, f"image{n}.jpg")
+        html = f'<screen width="{self.W}" height="{self.H}">{_photo_content(src, self.fullscreen)}</screen>'
+        self.service.submit(self.compositor.compile(html))   # updates "content" in place
 
     def _quit(self):
         self.running = False
@@ -292,15 +312,24 @@ def run_selftest():
     tap("href:imgslide1.html"); assert app.current == "imgslide1", app.current
     tap("href:imgslide2.html"); assert app.current == "imgslide2", app.current
     tap("back");                assert app.current == "imgslide1", app.current
-    # fullscreen: tap the image (full:<src>), then tap anywhere to exit
+    # fullscreen TOGGLE: tap the image -> content expands, controls stay; tap fs -> shrink
+    assert not app.fullscreen
     tap("full:" + os.path.join(IMG_DIR, "image1.jpg"))
-    assert app.current == "__full__", app.current
+    assert app.fullscreen, "image tap did not expand"
+    # controls layer + buttons survived the content-only re-render
+    assert "controls" in app.service.composer.layers
+    assert "back" in app.service.composer.layers and "fs" in app.service.composer.layers
     Image.fromarray(backend.snapshot_rgba(), "RGBA").save(OUT)
-    tap("back");                assert app.current == "imgslide1", app.current  # exit
+    tap("fs");                  assert not app.fullscreen, "fs toggle did not shrink"
+    # fullscreen persists across photos: turn on, go Next, still fullscreen
+    tap("full:" + os.path.join(IMG_DIR, "image1.jpg")); assert app.fullscreen
+    tap("href:imgslide2.html"); assert app.current == "imgslide2" and app.fullscreen
+    tap("fs");                  assert not app.fullscreen
+    tap("back");                assert app.current == "imgslide1", app.current
     tap("back");                assert app.current == "home", app.current
     tap("quit");                assert app.running is False
 
-    print(f"selftest OK — slideshows + fullscreen + back-restore verified -> {OUT}")
+    print(f"selftest OK — slideshows + fullscreen toggle (chrome kept) -> {OUT}")
     service.stop()
     return 0
 
