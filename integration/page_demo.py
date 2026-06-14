@@ -254,7 +254,7 @@ class PageApp:
 # ── runners ───────────────────────────────────────────────────────────────────
 
 def run_real(args):
-    backend = DrmDisplayBackend(device=args.device)
+    backend = DrmDisplayBackend(device=args.device, width=args.width, height=args.height)
     service = ScreenService(backend, fps=60)
     app = PageApp(service)
     service.start()
@@ -338,6 +338,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--device", default=None, help="display backend (default: auto)")
+    ap.add_argument("--width", type=int, default=None, help="force display width (e.g. 1920)")
+    ap.add_argument("--height", type=int, default=None, help="force display height (e.g. 1080)")
     ap.add_argument("--source", default=None,
                     choices=["touch", "composite", "abs", "mouse", "dummy"])
     ap.add_argument("--selftest", action="store_true", help="headless scripted run")
