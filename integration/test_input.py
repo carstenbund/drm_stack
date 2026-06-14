@@ -69,14 +69,23 @@ def test_pointer_overlay_tracks():
     assert (ev.phase, ev.x, ev.y) == ("hover", 100, 60)       # app still sees it
 
 
-def test_pointer_hidden_on_release():
+def test_pointer_stays_visible_after_release():
     s = _service()
     app_q = queue.Queue()
-    sink = fan_out(s.submit, app_q)
+    sink = fan_out(s.submit, app_q)               # default: a mouse pointer persists
     sink(TouchEvent("down", 50, 50)); s.render_once()
     assert s.composer.layers[_POINTER_NAME].visible
     sink(TouchEvent("up", 50, 50)); s.render_once()
-    assert not s.composer.layers[_POINTER_NAME].visible       # visible=False on up
+    assert s.composer.layers[_POINTER_NAME].visible    # NOT hidden — must not vanish
+
+
+def test_pointer_hides_on_release_when_requested():
+    s = _service()
+    app_q = queue.Queue()
+    sink = fan_out(s.submit, app_q, hide_on_release=True)   # touch-style
+    sink(TouchEvent("down", 50, 50)); s.render_once()
+    sink(TouchEvent("up", 50, 50)); s.render_once()
+    assert not s.composer.layers[_POINTER_NAME].visible
 
 
 # ── full path: a scripted reader drives taps the app hit-tests ────────────────
