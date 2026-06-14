@@ -1,0 +1,17 @@
+# The three packages are independent repos, cloned in by setup.sh.
+# The umbrella tracks only stack-level concerns — never their contents.
+/drm_display/
+/drm_screen/
+/drm_composer/
+
+# Stack-level dev environment
+/.venv/
+
+# Python noise
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Generated demo / test output
+*_frame.png
+frame.png
