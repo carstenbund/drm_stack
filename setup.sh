@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Bootstrap the drm_stack dev environment.
 #
-# Clones the three packages (if missing) and editable-installs them into a
-# stack-level .venv, in dependency order:  drm_display -> drm_screen -> drm_composer
+# Clones the packages (if missing) and editable-installs them into a stack-level
+# .venv, in dependency order:
+#   drm_display -> drm_screen -> drm_touch -> drm_composer
 #
 # Idempotent: safe to re-run.  Existing clones are left untouched (pull them
 # yourself); only missing ones are cloned.
@@ -12,7 +13,7 @@ cd "$(dirname "$0")"
 
 GH=https://github.com/carstenbund
 # package dir : repo name (dependency order matters)
-PACKAGES=(drm_display drm_screen drm_composer)
+PACKAGES=(drm_display drm_screen drm_touch drm_composer)
 
 echo "== clone missing packages =="
 for pkg in "${PACKAGES[@]}"; do
@@ -44,9 +45,10 @@ python -m pip install --quiet pytest   # dev: stack integration suite
 
 echo "== verify =="
 python - <<'PY'
-import drm_display, drm_screen, drm_composer
+import drm_display, drm_screen, drm_touch, drm_composer
 print("  drm_display ", getattr(drm_display, "__version__", "?"))
 print("  drm_screen  ok")
+print("  drm_touch   ok")
 print("  drm_composer ok")
 PY
 

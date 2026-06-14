@@ -2,6 +2,7 @@
 # The umbrella tracks only stack-level concerns — never their contents.
 /drm_display/
 /drm_screen/
+/drm_touch/
 /drm_composer/
 
 # Stack-level dev environment

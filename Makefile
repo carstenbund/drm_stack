@@ -16,5 +16,8 @@ demo:             ## render the headless end-to-end demo -> integration/stack_fr
 screen-demo:      ## interactive demo on the REAL display (Enter to step; auto-detects device)
 	$(PY) integration/screen_demo.py
 
+mouse-demo:       ## interactive touch/mouse demo on the REAL display (buttons + live cursor)
+	$(PY) integration/mouse_demo.py
+
 clean:            ## drop the venv and generated frames
 	rm -rf $(VENV) integration/*_frame.png
