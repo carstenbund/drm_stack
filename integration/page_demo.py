@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Full-chain demo app — HTML pages, navigation, touch/mouse input.
+"""Full-chain demo app — HTML pages, navigation, images, touch/mouse input.
 
 Exercises the entire stack as designed:
 
     screen-HTML page ─▶ drm_composer ─▶ drm_screen (service thread) ─▶ drm_display
                                               ▲
-    drm_touch ─▶ app queue ─▶ hit_test() ─────┘   (Next / Back / goto buttons)
+    drm_touch ─▶ app queue ─▶ hit_test() ─────┘   (Next / Back / links)
 
-The app keeps a page **history stack**: `goto` pushes, `back` restores the
-previous page. Two flavours from one home screen:
-  * a linear **slideshow** (Next / Back)
-  * a branching **app** (menu -> sub-pages -> back)
+Pages are laid out in **percentages**, so the *same HTML* fits any resolution —
+only the `<screen>` tag is stamped with the runtime display size. A page history
+stack gives `goto` / `back`. One home screen offers a text **slideshow**, a
+**photo** slideshow (`<img>`), and a branching **app** (menu → sub-pages → back).
+
+Photos: drop image1.jpg … image5.jpg into integration/images/ (a missing image
+shows a placeholder — drm_composer treats <img> leniently).
 
     .venv/bin/python integration/page_demo.py            # real display + pointer
     .venv/bin/python integration/page_demo.py --selftest  # headless, scripted nav
@@ -29,36 +32,41 @@ from drm_composer import Compositor
 from drm_touch import find_pointer_source, fan_out, TouchReader, TouchEvent
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_frame.png")
+IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
+N_PHOTOS = 5
 
 
-# ── pages: name -> builder(W, H) -> screen-HTML ───────────────────────────────
+# ── pages: name -> builder(W, H) -> screen-HTML (W,H only fill <screen>) ───────
 
-def _bar(W, H, back=False, link=None):
-    """Bottom bar: optional Back <button> (an action) + right-hand <a> (a link)."""
-    bw, bh, pad = 220, 64, 30
+def _bar(back=False, link=None):
+    """Bottom bar: optional Back <button> (action) + right-hand <a> (link)."""
     out = ""
     if back:
-        out += (f'<button id="back" x="{pad}" y="{H - bh - pad}" w="{bw}" h="{bh}" '
-                f'color="#444c5c">&#9664; Back</button>')
+        out += ('<button id="back" x="3%" y="83%" w="24%" h="12%" '
+                'color="#444c5c">&#9664; Back</button>')
     if link:
         href, label, color = link
-        out += (f'<a href="{href}" x="{W - bw - pad}" y="{H - bh - pad}" '
-                f'w="{bw}" h="{bh}" color="{color}">{label}</a>')
+        out += (f'<a href="{href}" x="73%" y="83%" w="24%" h="12%" '
+                f'color="{color}">{label}</a>')
     return out
 
 
 def page_home(W, H):
-    cx, bw, bh, gap = W // 2, 300, 96, 28
-    y = H // 2 - bh
+    items = [("slide1.html", "Slideshow", "#2a6cae"),
+             ("imgslide1.html", "Photos", "#8a6d3b"),
+             ("menu.html", "App demo", "#3a8a55")]
+    links = "".join(
+        f'<a href="{href}" x="{4 + k * 32}%" y="40%" w="28%" h="18%" '
+        f'color="{color}">{label} &#9654;</a>'
+        for k, (href, label, color) in enumerate(items))
     return f"""
     <screen width="{W}" height="{H}">
       <layer id="bg" z="0">
-        <box x="0" y="0" w="{W}" h="{H}" color="#0e1422"/>
-        <text x="60" y="56" size="46" color="#ffffff">drm_stack — full-chain demo</text>
-        <text x="60" y="124" size="22" color="#7fb0d0">HTML page &#8594; composer &#8594; screen &#8594; display, with pointer input</text>
-        <a href="slide1.html" x="{cx - bw - gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#2a6cae">Slideshow &#9654;</a>
-        <a href="menu.html" x="{cx + gap // 2}" y="{y}" w="{bw}" h="{bh}" color="#3a8a55">App demo &#9654;</a>
-        <button id="quit" x="{cx - 110}" y="{y + bh + gap}" w="220" h="64" color="#a33a3a">Quit</button>
+        <box x="0" y="0" w="100%" h="100%" color="#0e1422"/>
+        <text x="5%" y="8%" size="46" color="#ffffff">drm_stack — full-chain demo</text>
+        <text x="5%" y="18%" size="22" color="#7fb0d0">Laid out in %, so the same HTML fits any resolution.</text>
+        {links}
+        <button id="quit" x="35%" y="66%" w="30%" h="14%" color="#a33a3a">Quit</button>
       </layer>
     </screen>"""
 
@@ -67,11 +75,11 @@ def _slide(W, H, n, total, title, body, nxt):
     return f"""
     <screen width="{W}" height="{H}">
       <layer id="bg" z="0">
-        <box x="0" y="0" w="{W}" h="{H}" color="#101826"/>
-        <text x="{W - 150}" y="40" size="22" color="#5a708a">{n} / {total}</text>
-        <text x="60" y="80" size="44" color="#ffffff">{title}</text>
-        <text x="60" y="170" size="26" color="#cdd6e0">{body}</text>
-        {_bar(W, H, back=True, link=nxt)}
+        <box x="0" y="0" w="100%" h="100%" color="#101826"/>
+        <text x="88%" y="5%" size="22" color="#5a708a">{n} / {total}</text>
+        <text x="5%" y="11%" size="44" color="#ffffff">{title}</text>
+        <text x="5%" y="24%" size="26" color="#cdd6e0">{body}</text>
+        {_bar(back=True, link=nxt)}
       </layer>
     </screen>"""
 
@@ -79,7 +87,7 @@ def _slide(W, H, n, total, title, body, nxt):
 SLIDES = [
     ("Layers, not widgets", "drm_screen owns named RGBA layers and composites by z."),
     ("One coordinate boundary", "RGBA everywhere; a single RGBA->BGRA at the backend."),
-    ("Input mirrors output", "drm_touch -> hit_test() -> the app submits the next page."),
+    ("Resolution-independent", "This page is laid out in %, resolved against the screen."),
 ]
 
 
@@ -93,22 +101,37 @@ def page_slide(i):
     return build
 
 
+def page_imgslide(n):
+    def build(W, H):
+        src = os.path.join(IMG_DIR, f"image{n}.jpg")
+        last = n == N_PHOTOS
+        nxt = (("home.html", "Finish &#9654;", "#3a8a55") if last
+               else (f"imgslide{n + 1}.html", "Next &#9654;", "#8a6d3b"))
+        return f"""
+        <screen width="{W}" height="{H}">
+          <layer id="bg" z="0">
+            <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
+            <text x="5%" y="4%" size="26" color="#cdd6e0">Photo {n} / {N_PHOTOS}</text>
+            <img src="{src}" x="8%" y="14%" w="84%" h="62%"/>
+            {_bar(back=True, link=nxt)}
+          </layer>
+        </screen>"""
+    return build
+
+
 def page_menu(W, H):
-    bw, bh, gap = 360, 84, 24
-    cx, y0 = W // 2 - bw // 2, H // 2 - bh - gap
-    items = [("settings.html", "Settings", "#3a6ea5"),
-             ("about.html", "About", "#3a6ea5")]
+    items = [("settings.html", "Settings"), ("about.html", "About")]
     btns = "".join(
-        f'<a href="{href}" x="{cx}" y="{y0 + k * (bh + gap)}" w="{bw}" h="{bh}" '
-        f'color="{color}">{label}</a>'
-        for k, (href, label, color) in enumerate(items))
+        f'<a href="{href}" x="30%" y="{28 + k * 20}%" w="40%" h="15%" '
+        f'color="#3a6ea5">{label}</a>'
+        for k, (href, label) in enumerate(items))
     return f"""
     <screen width="{W}" height="{H}">
       <layer id="bg" z="0">
-        <box x="0" y="0" w="{W}" h="{H}" color="#111a14"/>
-        <text x="60" y="60" size="40" color="#ffffff">App menu</text>
+        <box x="0" y="0" w="100%" h="100%" color="#111a14"/>
+        <text x="5%" y="8%" size="40" color="#ffffff">App menu</text>
         {btns}
-        {_bar(W, H, back=True)}
+        {_bar(back=True)}
       </layer>
     </screen>"""
 
@@ -117,22 +140,21 @@ def _content(W, H, title, body):
     return f"""
     <screen width="{W}" height="{H}">
       <layer id="bg" z="0">
-        <box x="0" y="0" w="{W}" h="{H}" color="#161616"/>
-        <text x="60" y="70" size="40" color="#ffffff">{title}</text>
-        <text x="60" y="160" size="26" color="#cdd6e0">{body}</text>
-        {_bar(W, H, back=True)}
+        <box x="0" y="0" w="100%" h="100%" color="#161616"/>
+        <text x="5%" y="9%" size="40" color="#ffffff">{title}</text>
+        <text x="5%" y="24%" size="26" color="#cdd6e0">{body}</text>
+        {_bar(back=True)}
       </layer>
     </screen>"""
 
 
 PAGES = {
     "home": page_home,
-    "slide1": page_slide(0),
-    "slide2": page_slide(1),
-    "slide3": page_slide(2),
+    "slide1": page_slide(0), "slide2": page_slide(1), "slide3": page_slide(2),
     "menu": page_menu,
     "settings": lambda W, H: _content(W, H, "Settings", "Back restores the menu (history pop)."),
     "about": lambda W, H: _content(W, H, "About", "Built entirely from the drm-stack."),
+    **{f"imgslide{n}": page_imgslide(n) for n in range(1, N_PHOTOS + 1)},
 }
 
 
@@ -167,7 +189,6 @@ class PageApp:
 
     @staticmethod
     def _page_name(href):
-        # an href like "settings.html" names the page "settings"
         return href[:-5] if href.endswith(".html") else href
 
     def on_event(self, ev):
@@ -182,8 +203,6 @@ class PageApp:
             self.back()
         elif hit.startswith("href:"):              # an <a href="..."> link
             self.goto(self._page_name(hit[len("href:"):]))
-        elif hit.startswith("goto:"):              # a <button id="goto:..."> action
-            self.goto(hit[len("goto:"):])
 
     def button_center(self, hit_id):
         for layer in self.service.composer.layers.values():
@@ -240,22 +259,24 @@ def run_selftest():
             app.on_event(app_q.get_nowait())
         service.render_once()
 
-    # branching app + back-restore (navigation via <a href>)
+    # branching app + back-restore
     tap("href:menu.html");     assert app.current == "menu", app.current
     tap("href:settings.html"); assert app.current == "settings", app.current
     tap("back");               assert app.current == "menu", app.current
     tap("back");               assert app.current == "home", app.current
-    # slideshow chain
-    tap("href:slide1.html");   assert app.current == "slide1", app.current
-    tap("href:slide2.html");   assert app.current == "slide2", app.current
+    # text slideshow
+    tap("href:slide1.html");   tap("href:slide2.html"); assert app.current == "slide2"
     tap("back");               assert app.current == "slide1", app.current
-    tap("href:slide2.html");   tap("href:slide3.html")
-    assert app.current == "slide3", app.current
-    tap("href:home.html");     assert app.current == "home", app.current
+    # photo slideshow (placeholders until images are supplied)
+    tap("back");               assert app.current == "home", app.current
+    tap("href:imgslide1.html"); assert app.current == "imgslide1", app.current
+    tap("href:imgslide2.html"); assert app.current == "imgslide2", app.current
+    tap("back");                assert app.current == "imgslide1", app.current
     Image.fromarray(backend.snapshot_rgba(), "RGBA").save(OUT)
-    tap("quit");          assert app.running is False
+    tap("back");                assert app.current == "home", app.current
+    tap("quit");                assert app.running is False
 
-    print(f"selftest OK — navigation + back-restore verified -> {OUT}")
+    print(f"selftest OK — text/photo slideshows + back-restore verified -> {OUT}")
     service.stop()
     return 0
 

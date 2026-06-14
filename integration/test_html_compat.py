@@ -5,9 +5,10 @@ percentages against the screen; colors accept the full CSS range; bad values
 fall back rather than raising.
 """
 
-from drm_composer import parse_scene
+from drm_composer import parse_scene, paint_scene
 from drm_composer.parser import _length
 from drm_composer.painter import _rgba
+from drm_screen.commands import CreateLayer, PlaceRawBuffer
 
 
 # ── lengths ───────────────────────────────────────────────────────────────────
@@ -52,6 +53,15 @@ def test_colors_cover_the_css_range():
 def test_bad_color_is_transparent_not_an_error():
     assert _rgba("not-a-color") == (0, 0, 0, 0)
     assert _rgba("") == (0, 0, 0, 0)
+
+
+def test_missing_image_renders_placeholder_not_an_error():
+    html = ('<screen width="200" height="100"><layer id="l" z="0">'
+            '<img src="/no/such/image.jpg" x="10" y="10" w="80" h="60"/>'
+            '</layer></screen>')
+    batch = paint_scene(parse_scene(html))   # placeholder drawn; no exception
+    assert any(isinstance(c, CreateLayer) for c in batch)
+    assert any(isinstance(c, PlaceRawBuffer) for c in batch)
 
 
 def test_a_scene_with_messy_values_still_parses():

@@ -64,6 +64,13 @@ def test_navigation_history_and_back_restore():
     assert app.current == "home"
 
 
+def test_photo_slideshow_navigation():
+    app = _app()
+    _tap(app, "href:imgslide1.html"); assert app.current == "imgslide1"
+    _tap(app, "href:imgslide2.html"); assert app.current == "imgslide2"
+    _tap(app, "back");                assert app.current == "imgslide1"   # restored
+
+
 def test_slideshow_chain_and_quit():
     app = _app()
     _tap(app, "href:slide1.html"); assert app.current == "slide1"
