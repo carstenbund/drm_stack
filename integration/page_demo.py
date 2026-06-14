@@ -113,9 +113,33 @@ def page_imgslide(n):
           <layer id="bg" z="0">
             <box x="0" y="0" w="100%" h="100%" color="#0b0d12"/>
             <text x="3%" y="3%" size="18" color="#7c8896">Photo {n} / {N_PHOTOS}</text>
+            <a href="full{n}.html" x="84%" y="2%" w="14%" h="7%" size="18" color="#2a3a4a">Fullscreen</a>
             <img src="{src}" x="2%" y="8%" w="96%" h="78%" fit="contain"/>
             <button id="back" x="2%" y="89%" w="15%" h="9%" size="20" color="#444c5c">&#9664; Back</button>
             <a href="{href}" x="83%" y="89%" w="15%" h="9%" size="20" color="{color}">{label}</a>
+          </layer>
+        </screen>"""
+    return build
+
+
+def page_full(n):
+    """Fullscreen photo: image edge-to-edge, no visible chrome. Navigation is by
+    invisible tap zones — top = exit, left = prev, right = next (looping)."""
+    def build(W, H):
+        src = os.path.join(IMG_DIR, f"image{n}.jpg")
+        prev = f"full{n - 1 if n > 1 else N_PHOTOS}.html"      # wrap
+        nxt = f"full{n + 1 if n < N_PHOTOS else 1}.html"
+        return f"""
+        <screen width="{W}" height="{H}">
+          <layer id="bg" z="0">
+            <box x="0" y="0" w="100%" h="100%" color="#000000"/>
+            <img src="{src}" x="0" y="0" w="100%" h="100%" fit="contain"/>
+            <text x="34%" y="96%" size="15" color="#39414c">tap — left: back · right: next · top: exit</text>
+          </layer>
+          <layer id="zones" z="10">
+            <a href="imgslide{n}.html" x="0"   y="0"   w="100%" h="12%" color="#00000000"/>
+            <a href="{prev}"           x="0"   y="12%" w="30%"  h="84%" color="#00000000"/>
+            <a href="{nxt}"            x="30%" y="12%" w="70%"  h="84%" color="#00000000"/>
           </layer>
         </screen>"""
     return build
@@ -157,6 +181,7 @@ PAGES = {
     "settings": lambda W, H: _content(W, H, "Settings", "Back restores the menu (history pop)."),
     "about": lambda W, H: _content(W, H, "About", "Built entirely from the drm-stack."),
     **{f"imgslide{n}": page_imgslide(n) for n in range(1, N_PHOTOS + 1)},
+    **{f"full{n}": page_full(n) for n in range(1, N_PHOTOS + 1)},
 }
 
 
