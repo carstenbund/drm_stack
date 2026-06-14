@@ -99,6 +99,24 @@ def test_fullscreen_hit_parses_to_an_action():
     assert a.kind == "fullscreen" and a.target == "/p/x.jpg"
 
 
+def test_fullscreen_always_has_no_toggle_overlay():
+    # 'always' is drawn fullscreen and is NOT toggle-able -> no interactive layer
+    html = ('<screen width="800" height="480"><layer id="l" z="0">'
+            '<img src="/p/x.jpg" x="10" y="10" w="100" h="80" fullscreen="always"/>'
+            '</layer></screen>')
+    batch = paint_scene(parse_scene(html))
+    assert not [c for c in batch if isinstance(c, CreateLayer) and c.interactive]
+
+
+def test_fullscreen_modes_parse():
+    from drm_composer.parser import _fullscreen
+    assert _fullscreen({"fullscreen": None}) == "toggle"       # bare attribute
+    assert _fullscreen({"fullscreen": "toggle"}) == "toggle"
+    assert _fullscreen({"fullscreen": "always"}) == "always"
+    assert _fullscreen({"fullscreen": "false"}) == ""
+    assert _fullscreen({}) == ""
+
+
 def test_a_scene_with_messy_values_still_parses():
     # units, percents, a CSS name, and a typo'd color — no exception
     html = ('<screen width="200" height="100"><layer id="l" z="0">'
