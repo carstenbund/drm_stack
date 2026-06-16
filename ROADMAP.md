@@ -11,6 +11,32 @@ grounded in the current codebase. Each proposal maps to real files, class names,
 method signatures, and integration-test anchors so each stage can be picked up
 without re-deriving context.
 
+> **A note on scope.** The four packages (`drm_display`, `drm_screen`,
+> `drm_touch`, `drm_composer`) are **not tracked in this umbrella repo** — they
+> live in their own GitHub repos and are cloned by `setup.sh`. The API names,
+> signatures, and code sketches below were verified against the actual package
+> sources (cloned from `github.com/carstenbund/<pkg>`). Where this proposal
+> shows a "current" code excerpt, it is quoted/derived from real source; where it
+> shows "new" code, it is a proposed sketch to be adapted to the real module.
+
+### Verified API baseline (from real package sources)
+
+| Symbol | Real signature / fact | File |
+|---|---|---|
+| `Composer.__init__` | `(self, screen_width, screen_height)` — attrs `screen_width`, `screen_height` | `drm_screen/composer.py:15` |
+| `Composer.render()` | pure `() -> np.ndarray`; iterates `sorted(layers, key=z)` | `drm_screen/composer.py:51` |
+| blend helper | `Composer._blend(canvas, layer)` — a `@staticmethod`; honors `layer.opacity` | `drm_screen/composer.py:61` |
+| `Layer` pixels | stored in `layer.buffer` (numpy `(h,w,4)` uint8), **not** `.data` bytes | `drm_screen/layer.py:25` |
+| command apply | module-level `apply_command(composer, cmd)` — **no** `ScreenService._apply()` | `drm_screen/commands.py:134` |
+| recomposite gate | `ScreenService.dirty` flag already exists; `render_once()` recomposites only when dirty | `drm_screen/service.py:23,51` |
+| backend boundary | `DrmDisplayBackend.write(frame_rgba)` does RGBA→BGRA before `Screen.show()` | `drm_screen/backend.py:18` |
+| cursor command | `SetPointer(x, y, visible=True)` — **not** `SetPosition("__pointer__", …)` | `drm_screen/commands.py:97` |
+| cursor internals | `_POINTER_NAME`, `_POINTER_Z=1_000_000`, `default_cursor() -> ndarray`, `_cursor_hotspot()` | `drm_screen/commands.py:110,115,127` |
+| wire registry | new commands must be added to `_KINDS` and handle bytes via base64 in `to_wire`/`from_wire` | `drm_screen/commands.py:178` |
+| `fan_out` | `fan_out(submit, app_queue, cursor=True, hide_on_release=False)`; emits `SetPointer` | `drm_touch/reader.py:44` |
+| image load | inside painter's `_paste_image(canvas, node)` via `Image.open(node.src)` | `drm_composer/painter.py:115,122` |
+| display backend | `drm_display` is a **C extension** (`drm_display.c`) using **legacy `drmModeSetCrtc` only** — no plane/cursor/atomic API exists yet | `drm_display/drm_display.c:112` |
+
 **The governing constraint:** every proposal must preserve the six design
 invariants in `README.md` lines 46–84.  In particular:
 
@@ -155,34 +181,47 @@ fi
 
 ### Integration into `drm_composer`
 
-The change is confined to a single file: the painter that handles `<img>`.
+The change is confined to a single function: `_paste_image(canvas, node)` in
+`drm_composer/painter.py` (line 115), which currently does
+`img = Image.open(node.src).convert("RGBA")` at line 122 and falls back to
+`_paste_placeholder(...)` on `OSError`.
 
-**Location:** `drm_composer/painter.py` — the function `_fit_image(img, w, h, mode)`
-and the section that loads image data for `ImageNode`.
-
-**Change:** Before calling `PIL.Image.open(src)`, check the file extension.  If
-`.svg`, call `drm_resvg.render_svg_rgba` and wrap the result in a `PIL.Image` so
-the rest of the painter pipeline is unchanged.
+**Change:** add an extension check at the top of `_paste_image`. If `.svg`, render
+via `drm_resvg` into a `PIL.Image`; otherwise fall through to the existing
+`Image.open` path unchanged. Mirror the existing placeholder-on-failure behavior.
 
 ```python
-# drm_composer/painter.py — new helper (no other changes needed)
-
-def _load_image(src: str, w: int, h: int) -> "PIL.Image.Image":
-    import os, PIL.Image
-    if os.path.splitext(src)[1].lower() == ".svg":
-        try:
-            from drm_resvg import render_svg_rgba
-            data = open(src, "rb").read()
-            rgba_bytes, rw, rh = render_svg_rgba(data, w, h)
-            return PIL.Image.frombytes("RGBA", (rw, rh), rgba_bytes)
-        except Exception:
-            # Fallback: show placeholder, same as missing PNG
-            return PIL.Image.new("RGBA", (w, h), (80, 80, 80, 255))
-    return PIL.Image.open(src).convert("RGBA")
+# drm_composer/painter.py — inside _paste_image(), replacing the Image.open line
+import os
+ext = os.path.splitext(node.src)[1].lower()
+if ext == ".svg":
+    try:
+        from drm_resvg import render_svg_rgba
+        # SVG has no implicit pixel size: use explicit w/h if given, else a
+        # sensible default box, then let _fit_image handle final placement.
+        rw, rh = (w or canvas.width), (h or canvas.height)
+        with open(node.src, "rb") as f:
+            rgba_bytes, rw, rh = render_svg_rgba(f.read(), rw, rh)
+        img = Image.frombytes("RGBA", (rw, rh), rgba_bytes)
+    except Exception:           # parse error, missing file, or drm_resvg absent
+        _paste_placeholder(canvas, x, y, w, h, node.src)
+        return
+else:
+    try:
+        img = Image.open(node.src).convert("RGBA")
+    except OSError:
+        _paste_placeholder(canvas, x, y, w, h, node.src)
+        return
 ```
 
-Replace every `PIL.Image.open(src)` call in the `ImageNode` painter path with
-`_load_image(src, target_w, target_h)`.
+Notes verified against source:
+- `_paste_image` already computes `x, y, w, h` (handling `fullscreen="always"`),
+  so the SVG branch reuses them — no signature change.
+- `w`/`h` may be `0`/falsy (image pasted at natural size). SVG has no implicit
+  pixel size, so the branch must pick a raster size; the sketch falls back to the
+  canvas size. This is the one real subtlety beyond a pure extension swap.
+- Catch a broad `Exception` (not just `OSError`): `usvg`/`resvg` raise
+  `ValueError` from the PyO3 binding, and `ImportError` if `drm_resvg` is absent.
 
 This is the **only change to drm_composer**.  No changes to the command contract,
 `drm_screen`, `drm_display`, or `drm_touch`.
@@ -200,7 +239,8 @@ on tag name.  Add a branch:
 ```
 
 No painter change required — `parse_img_node` already extracts `src`, `w`, `h`,
-`fit` and emits an `ImageNode`.  The painter's `_load_image` already handles `.svg`.
+`fit` and emits an `ImageNode`.  The painter's `_paste_image` SVG branch already
+handles `.svg`.
 
 ---
 
@@ -213,7 +253,7 @@ No painter change required — `parse_img_node` already extracts `src`, `w`, `h`
 import pytest
 from drm_composer import Compositor
 from drm_screen import InProcessTarget
-from conftest import W, H, render, service   # existing fixtures
+from conftest import W, H, render   # constants/helpers; `service` is an auto fixture
 
 SVG_SCENE = f"""
 <screen width="{W}" height="{H}">
@@ -257,7 +297,7 @@ setup.sh install order:
   drm_resvg      (NEW — Rust build, standalone)
   drm_screen     (no change)
   drm_touch      (no change)
-  drm_composer   (changed: _load_image; depends on drm_resvg at runtime)
+  drm_composer   (changed: SVG branch in _paste_image; depends on drm_resvg at runtime)
 ```
 
 `drm_resvg` is an optional dependency of `drm_composer`: if the package is absent
@@ -279,8 +319,17 @@ cheaply on every cursor move).
 
 **Package:** `drm_screen` only.  All other packages are unchanged.
 
-**Class:** `drm_screen.Composer` — currently `Composer.render()` blends all
-visible layers in z-order into a single canvas on every call.
+**Class:** `drm_screen.Composer` (`composer.py:14`) — `render()` (line 51) blends
+all visible layers in z-order into a fresh canvas on every call, via the
+`@staticmethod _blend(canvas, layer)` (line 61, which honors `layer.opacity`).
+
+**Current recomposite trigger (verified):** a cursor move arrives as a
+`SetPointer(x, y, visible)` command → `apply_command` updates the
+`__pointer__` layer's `x/y` (`commands.py:161-171`) → the `_drain()` loop sets
+`ScreenService.dirty = True` (`service.py:49`) → `render_once()` calls the full
+`composer.render()` (`service.py:54`). So every cursor move does re-blend the
+entire scene. The premise is correct; the fix is to cache everything below the
+cursor.
 
 **Invariant preserved:** `Composer.render()` remains the only place pixels are
 blended (design invariant 5).  The split is internal to that function; the public
@@ -290,74 +339,71 @@ interface is unchanged.
 
 ### Implementation
 
-**New state on `Composer`:**
+**New state on `Composer`** (note real attribute names `screen_width` /
+`screen_height`):
 
 ```python
-# drm_screen/composer.py  (current class — exact location TBC by drm_screen repo)
+# drm_screen/composer.py — additions to the existing class
+
+from .commands import _POINTER_NAME   # the reserved cursor layer name
 
 class Composer:
-    def __init__(self, width: int, height: int):
-        self.width = width
-        self.height = height
+    def __init__(self, screen_width: int, screen_height: int):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
         self.layers: dict[str, Layer] = {}
         # NEW:
         self._base_frame: np.ndarray | None = None
-        self._base_dirty: bool = True           # set True on any non-cursor layer change
-        self._front_frame: np.ndarray | None = None
-
-    def _is_cursor_layer(self, name: str) -> bool:
-        from drm_screen.commands import _POINTER_NAME
-        return name == _POINTER_NAME
+        self._base_dirty: bool = True       # rebuild base on any non-cursor change
+        self._render_count: int = 0         # test instrumentation
 ```
 
-**Modified `render()` logic:**
+**Modified `render()` logic** (reusing the existing `_blend` staticmethod):
 
 ```python
     def render(self) -> np.ndarray:
-        # 1. Rebuild base_frame only when scene changed
+        # 1. Rebuild base_frame only when the (non-cursor) scene changed
         if self._base_dirty or self._base_frame is None:
-            canvas = np.zeros((self.height, self.width, 4), dtype=np.uint8)
-            for layer in sorted(
-                (l for l in self.layers.values()
-                 if l.visible and not self._is_cursor_layer(l.name)),
-                key=lambda l: l.z,
-            ):
-                _alpha_blend_into(canvas, layer)
+            canvas = np.zeros(
+                (self.screen_height, self.screen_width, 4), dtype=np.uint8
+            )
+            for layer in sorted(self.layers.values(), key=lambda l: l.z):
+                if layer.name == _POINTER_NAME:
+                    continue
+                if not layer.visible or layer.buffer is None:
+                    continue
+                self._blend(canvas, layer)
             self._base_frame = canvas
             self._base_dirty = False
+            self._render_count += 1
 
-        # 2. Composite cursor on top — cheap copy + blit
+        # 2. Composite the cursor on top — cheap copy + one blit
         cursor = self.layers.get(_POINTER_NAME)
-        if cursor and cursor.visible:
-            self._front_frame = self._base_frame.copy()
-            _alpha_blend_into(self._front_frame, cursor)
-        else:
-            self._front_frame = self._base_frame
-
-        return self._front_frame
+        if cursor and cursor.visible and cursor.buffer is not None:
+            front = self._base_frame.copy()
+            self._blend(front, cursor)
+            return front
+        return self._base_frame
 ```
 
-**Dirty flag management** — `_base_dirty = True` must be set whenever a
-non-cursor layer is created, updated, hidden, shown, moved, or deleted.  The
-existing command handler in `ScreenService` (the `_apply(cmd)` method or
-equivalent) already processes each command in sequence.  Add a call to
-`self.composer._base_dirty = True` inside each branch that touches a non-cursor
-layer:
+**Dirty-flag management** — the base must be rebuilt on any non-cursor layer
+change. The cleanest seam is `apply_command(composer, cmd)` in `commands.py:134`
+(there is **no** `ScreenService._apply()`; application is this module-level
+function). Set `composer._base_dirty = True` for every command except a
+`SetPointer` whose only effect is moving an existing cursor:
 
 ```python
-# In ScreenService._apply() or equivalent:
-def _apply(self, cmd):
-    name = getattr(cmd, "name", None)
-    is_cursor = name == _POINTER_NAME
-    ...
-    # existing handling ...
-    if not is_cursor:
-        self.composer._base_dirty = True
+# drm_screen/commands.py — at the end of apply_command(), after the dispatch:
+    if not (isinstance(cmd, SetPointer) and _POINTER_NAME in composer.layers):
+        composer._base_dirty = True
 ```
 
-For `SetPosition` on the cursor layer: **do not** set `_base_dirty`.  Only update
-`layer.x` and `layer.y`.  The next `render()` call will re-blit the cursor onto
-the cached `base_frame`.
+(The `SetPointer` that *first creates* the cursor layer still dirties the base,
+which is correct — the cursor layer exists from then on, and subsequent moves
+skip the rebuild.)
+
+A pure cursor move therefore leaves `_base_dirty` False; the next `render()`
+re-blits the cached `base_frame` instead of recompositing the scene.
 
 ---
 
@@ -470,31 +516,43 @@ drm_screen_native/
     __init__.py
 ```
 
-**Data contract** — the Rust function receives layer data as Python objects:
+**Data contract** — the Rust function receives layer data as Python objects.
+Note: layer pixels live in `layer.buffer` (a numpy `(h,w,4)` uint8 array), and
+the Python `_blend` honors `layer.opacity` — the native blend **must** apply
+opacity too, or the parity test below will fail.
 
 ```python
 # Python call site (inside drm_screen.Composer.render):
 from drm_screen_native import render_layers
 
 frame_bytes = render_layers(
-    width=self.width,
-    height=self.height,
+    width=self.screen_width,
+    height=self.screen_height,
     layers=[
         {
             "x": layer.x,
             "y": layer.y,
             "z": layer.z,
-            "visible": layer.visible,
             "width": layer.width,
             "height": layer.height,
-            "data": layer.data,   # bytes, RGBA
+            "opacity": float(layer.opacity),
+            "data": layer.buffer.tobytes(),   # RGBA bytes from the numpy buffer
         }
         for layer in sorted(self.layers.values(), key=lambda l: l.z)
-        if layer.visible
+        if layer.visible and layer.buffer is not None
     ],
 )
-return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(self.height, self.width, 4).copy()
+return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(
+    self.screen_height, self.screen_width, 4
+).copy()
 ```
+
+> **Parity caveat.** The Python blend (`composer.py:72-78`) is float32:
+> `alpha = (src_a/255) * opacity`; `out_rgb = src*alpha + dst*(1-alpha)`;
+> `out_a = src_a + dst_a*(1-alpha)`, clipped to `[0,255]` then cast to uint8.
+> A naive integer Rust blend will **not** be bit-identical. Either replicate the
+> float32 rounding exactly in Rust, or relax the parity test to
+> `assert_allclose(atol=1)` rather than `assert_array_equal`.
 
 **`src/lib.rs` — compositor hot path**
 
@@ -588,12 +646,12 @@ class Composer:
 
     def _render_native(self) -> np.ndarray:
         frame_bytes = _native_render(
-            width=self.width,
-            height=self.height,
-            layers=[...],   # as shown above
+            width=self.screen_width,
+            height=self.screen_height,
+            layers=[...],   # as shown above (buffer.tobytes(), opacity included)
         )
         return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(
-            self.height, self.width, 4
+            self.screen_height, self.screen_width, 4
         ).copy()
 
     def _render_python(self) -> np.ndarray:
@@ -612,32 +670,33 @@ native or Python path executes.  Add one explicit test to verify parity:
 # integration/test_native_compositor.py (new)
 import pytest
 import numpy as np
-from conftest import W, H, render, raw_layer, solid, service
+from conftest import W, H, render, raw_layer, solid   # `service` is an auto fixture
 
-def test_native_and_python_produce_identical_frames(service):
-    """Native Rust compositor and Python compositor produce bit-identical output."""
+def test_native_matches_python_within_tolerance(service):
+    """Native Rust compositor and Python compositor agree to within 1 LSB.
+
+    Exact equality is only achievable if the Rust blend reproduces the Python
+    float32 rounding bit-for-bit; otherwise assert_allclose(atol=1) is the
+    honest contract.
+    """
     try:
         from drm_screen_native import render_layers
     except ImportError:
         pytest.skip("drm_screen_native not installed")
 
-    bg = raw_layer("bg", solid(W, H, (20, 30, 60, 255)), z=0)
-    fg = raw_layer("fg", solid(W, H, (200, 0, 0, 170)), z=10)
-
-    frame_py = render(service, bg + fg)   # uses Python path (disable native temporarily)
-    # Re-render via native path directly
-    from drm_screen_native import render_layers
+    frame_py = render(service, raw_layer("bg", solid(W, H, (20, 30, 60, 255)), z=0)
+                              + raw_layer("fg", solid(W, H, (200, 0, 0, 170)), z=10))
     layers = [
-        {"x": 0, "y": 0, "z": 0, "visible": True, "width": W, "height": H,
+        {"x": 0, "y": 0, "z": 0, "width": W, "height": H, "opacity": 1.0,
          "data": solid(W, H, (20, 30, 60, 255)).tobytes()},
-        {"x": 0, "y": 0, "z": 10, "visible": True, "width": W, "height": H,
+        {"x": 0, "y": 0, "z": 10, "width": W, "height": H, "opacity": 1.0,
          "data": solid(W, H, (200, 0, 0, 170)).tobytes()},
     ]
     frame_native = np.frombuffer(
         render_layers(W, H, layers), dtype=np.uint8
     ).reshape(H, W, 4)
 
-    np.testing.assert_array_equal(frame_py, frame_native)
+    np.testing.assert_allclose(frame_py, frame_native, atol=1)
 ```
 
 ---
@@ -648,6 +707,15 @@ def test_native_and_python_produce_identical_frames(service):
 
 Use the VC4/V3D DRM cursor plane on Raspberry Pi so cursor movement is an atomic
 plane property update — no framebuffer rewrite, no compositing cost at all.
+
+> **Reality check (verified).** `drm_display`'s rendering core is a **C
+> extension** (`drm_display/drm_display.c`) that currently uses **only legacy
+> `drmModeSetCrtc`** (lines 112–185) — there is no plane enumeration, no atomic
+> KMS, and no cursor API anywhere in the package. So this stage is **not** a few
+> Python methods on `Screen`: it requires new C code (GEM dumb buffer for the
+> cursor BO, `drmModeSetCursor2`, `drmModeMoveCursor`, and cursor-plane
+> discovery), exposed through new Python entry points. This is the most
+> substantial stage in the roadmap and the effort estimate reflects that.
 
 ### Architecture
 
@@ -745,16 +813,21 @@ class DrmDisplayBackend:
 
 **`ScreenService`** — new cursor commands or direct path:
 
-The cleanest approach is two new command types (preserving the "commands are data"
-invariant):
+The cleanest approach extends the existing `SetPointer` command rather than
+inventing parallel ones — the cursor already flows as `SetPointer` from
+`drm_touch`, so a hardware path can be a property of how `apply_command` (and the
+backend) handles it. If distinct records are preferred, add them as real
+`@dataclass`es **and register them in `_KINDS`** (`commands.py:178`) so the wire
+format round-trips; bytes fields must be base64-encoded like `PlaceRawBuffer.data`
+already is (`commands.py:187`):
 
 ```python
-# drm_screen/commands.py — new command types
+# drm_screen/commands.py — new command types (register in _KINDS!)
 
 @dataclass
 class SetHardwareCursor:
-    """Upload cursor bitmap to DRM cursor plane."""
-    rgba: bytes
+    """Upload cursor bitmap to the DRM cursor plane."""
+    data: bytes          # RGBA; named `data` so to_wire/from_wire base64 it
     width: int
     height: int
     hotspot_x: int = 0
@@ -762,54 +835,55 @@ class SetHardwareCursor:
 
 @dataclass
 class MoveHardwareCursor:
-    """Move cursor plane (no recomposite)."""
+    """Move the cursor plane (no recomposite)."""
     x: int
     y: int
+
+# _KINDS = {c.__name__: c for c in (... , SetHardwareCursor, MoveHardwareCursor)}
 ```
 
-`ScreenService._apply()` handles them:
+Handle them inside the module-level `apply_command(composer, cmd)` (there is no
+`ScreenService._apply`). `apply_command` currently takes only `(composer, cmd)`,
+so reaching the backend means either threading the service/backend into the
+dispatch or handling these two records in `ScreenService.render_once()` before
+`apply_command` runs. Sketch (backend-aware variant):
 
 ```python
 elif isinstance(cmd, SetHardwareCursor):
-    if self.backend.has_hardware_cursor:
-        self.backend.set_cursor(cmd.rgba, cmd.width, cmd.height,
-                                cmd.hotspot_x, cmd.hotspot_y)
-        self._using_hw_cursor = True
+    if backend.has_hardware_cursor:
+        backend.set_cursor(cmd.data, cmd.width, cmd.height,
+                           cmd.hotspot_x, cmd.hotspot_y)
 
 elif isinstance(cmd, MoveHardwareCursor):
-    if self._using_hw_cursor:
-        self.backend.move_cursor(cmd.x, cmd.y)
-        # Do NOT mark _base_dirty — no recomposite needed
-        return
-    # Fallback: translate to software cursor SetPosition
-    from drm_screen.commands import SetPosition
-    self._apply(SetPosition(_POINTER_NAME, cmd.x, cmd.y))
+    if backend.has_hardware_cursor:
+        backend.move_cursor(cmd.x, cmd.y)
+        # no composer change, no dirty flag — the plane moved in hardware
+    else:
+        # Fallback to the software cursor path: reuse SetPointer
+        apply_command(composer, SetPointer(cmd.x, cmd.y, visible=True))
 ```
 
 ---
 
 ### `drm_touch` / `fan_out` change
 
-`fan_out` currently emits `SetPosition("__pointer__", x, y)` for cursor movement.
-When hardware cursor is active, it should emit `MoveHardwareCursor(x, y)` instead.
-
-The cleanest approach: `fan_out` accepts an optional `cursor_command_factory`
-callable:
+`fan_out` lives in `drm_touch/reader.py:44` with the real signature
+`fan_out(submit, app_queue, cursor=True, hide_on_release=False)` and currently
+emits `SetPointer(ev.x, ev.y, visible=visible)` (line 61) — **not**
+`SetPosition`. To support hardware cursor, add an optional
+`cursor_command_factory` that defaults to the existing `SetPointer` behavior:
 
 ```python
-# drm_touch/fan_out.py
+# drm_touch/reader.py — extend the existing fan_out signature
 
-def fan_out(
-    submit_cmd,
-    app_queue,
-    hide_on_release: bool = False,
-    cursor_command_factory=None,   # NEW — defaults to software cursor
-):
-    def _move(x, y):
+def fan_out(submit, app_queue, cursor=True, hide_on_release=False,
+            cursor_command_factory=None):   # NEW — defaults to SetPointer
+    from drm_screen.commands import SetPointer
+    def _move(x, y, visible):
         if cursor_command_factory:
-            submit_cmd([cursor_command_factory(x, y)])
+            submit([cursor_command_factory(x, y)])
         else:
-            submit_cmd([SetPosition(_POINTER_NAME, x, y)])
+            submit([SetPointer(x, y, visible=visible)])
     ...
 ```
 
@@ -837,11 +911,14 @@ def start(self):
     ...
     self._using_hw_cursor = False
     if self.backend.has_hardware_cursor:
-        # Upload the default pointer cursor bitmap
-        from drm_screen.commands import _cursor_bitmap, _cursor_hotspot
+        # Upload the default pointer cursor bitmap. The real helpers are
+        # default_cursor() -> np.ndarray (h,w,4) and _cursor_hotspot() -> (x,y),
+        # both in drm_screen/commands.py.
+        from drm_screen.commands import default_cursor, _cursor_hotspot
+        cur = default_cursor()              # ndarray (h, w, 4) RGBA
+        ch, cw = cur.shape[:2]
         hx, hy = _cursor_hotspot()
-        rgba, cw, ch = _cursor_bitmap()
-        self.backend.set_cursor(rgba, cw, ch, hx, hy)
+        self.backend.set_cursor(cur.tobytes(), cw, ch, hx, hy)
         self._using_hw_cursor = True
     ...
 ```
@@ -1047,10 +1124,10 @@ hw-cursor-test:
 
 | Package | Stage 1 | Stage 2 | Stage 4 | Stage 5 |
 |---|---|---|---|---|
-| `drm_display` | — | — | — | `set_cursor`, `move_cursor`, plane detection |
-| `drm_screen` | — | `Composer.render()` split; dirty flag | `_render_native()` fallback; `try/except` | `SetHardwareCursor`, `MoveHardwareCursor`; startup detection |
-| `drm_touch` | — | — | — | `fan_out()` `cursor_command_factory` param |
-| `drm_composer` | `_load_image()` in painter | — | — | — |
+| `drm_display` | — | — | — | **C-level** (`drm_display.c`): GEM cursor BO, `drmModeSetCursor2`/`drmModeMoveCursor`, plane discovery + Python `set_cursor`/`move_cursor` |
+| `drm_screen` | — | `Composer.render()` base/front split; `_base_dirty` (distinct from existing `dirty`) | `_render_native()` fallback; `try/except` | `SetHardwareCursor`/`MoveHardwareCursor` (register in `_KINDS`); backend-aware `apply_command`; startup detection |
+| `drm_touch` | — | — | — | `fan_out()` `cursor_command_factory` param (default stays `SetPointer`) |
+| `drm_composer` | SVG branch in `_paste_image()` (painter.py:115) | — | — | — |
 | `drm_resvg` | **new package** | — | — | — |
 | `drm_screen_native` | — | — | **new package** | — |
 | `drm_stack` (umbrella) | `test_svg.py`; `assets/test.svg`; `setup.sh` | `test_cursor_split.py` | `test_native_compositor.py` | `test_hw_cursor.py` |
