@@ -1,15 +1,29 @@
 # DRM Stack Roadmap: SVG, Performance, and Hardware Acceleration
 
-**Implementation Proposal — Detailed Engineering Specification**
+**Overview and Cross-Package Reference**
+
+Per-package implementation instructions (self-contained, actionable):
+
+| Package | File | Stages covered |
+|---|---|---|
+| `drm_composer` | [`docs/drm_composer.md`](docs/drm_composer.md) | Stage 1 — SVG support |
+| `drm_screen` | [`docs/drm_screen.md`](docs/drm_screen.md) | Stage 2 — cursor split; Stage 4 — Rust compositor; Stage 5 — hardware cursor |
+| `drm_display` | [`docs/drm_display.md`](docs/drm_display.md) | Stage 5 — cursor C bindings |
+| `drm_touch` | [`docs/drm_touch.md`](docs/drm_touch.md) | Stage 5 — `fan_out` extension |
+| `drm_resvg` *(new)* | [`docs/drm_resvg.md`](docs/drm_resvg.md) | Stage 1 — Rust/PyO3 SVG renderer |
+| `drm_screen_native` *(new)* | [`docs/drm_screen_native.md`](docs/drm_screen_native.md) | Stage 4 — Rust/PyO3 compositor |
+
+This document covers: execution order, cross-package dependencies, profiling
+strategy, integration tests, and verified API baseline.
 
 ---
 
 ## Overview
 
-This document translates the roadmap goals into concrete implementation steps
-grounded in the current codebase. Each proposal maps to real files, class names,
-method signatures, and integration-test anchors so each stage can be picked up
-without re-deriving context.
+This document captures the cross-cutting context — stage ordering, inter-package
+dependencies, and the verified API baseline. Implementers should read the
+per-package doc for their target and refer here only for ordering constraints or
+context about adjacent stages.
 
 > **A note on scope.** The four packages (`drm_display`, `drm_screen`,
 > `drm_touch`, `drm_composer`) are **not tracked in this umbrella repo** — they
