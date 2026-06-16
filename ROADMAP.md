@@ -710,12 +710,12 @@ plane property update — no framebuffer rewrite, no compositing cost at all.
 
 > **Reality check (verified).** `drm_display`'s rendering core is a **C
 > extension** (`drm_display/drm_display.c`) that currently uses **only legacy
-> `drmModeSetCrtc`** (lines 112–185) — there is no plane enumeration, no atomic
-> KMS, and no cursor API anywhere in the package. So this stage is **not** a few
-> Python methods on `Screen`: it requires new C code (GEM dumb buffer for the
-> cursor BO, `drmModeSetCursor2`, `drmModeMoveCursor`, and cursor-plane
-> discovery), exposed through new Python entry points. This is the most
-> substantial stage in the roadmap and the effort estimate reflects that.
+> `drmModeSetCrtc`** (lines 112–185). `drm_display` needs thin new C additions
+> (GEM dumb-buffer allocation for the cursor BO, `drmModeSetCursor2`,
+> `drmModeMoveCursor`) but these are relatively narrow ioctls — they require no
+> atomic KMS and no plane enumeration. The bulk of the stage is in `drm_screen`:
+> new command types, service logic, detection, and the fallback path. The effort
+> estimate reflects the C work plus the end-to-end integration.
 
 ### Architecture
 
@@ -1124,8 +1124,8 @@ hw-cursor-test:
 
 | Package | Stage 1 | Stage 2 | Stage 4 | Stage 5 |
 |---|---|---|---|---|
-| `drm_display` | — | — | — | **C-level** (`drm_display.c`): GEM cursor BO, `drmModeSetCursor2`/`drmModeMoveCursor`, plane discovery + Python `set_cursor`/`move_cursor` |
-| `drm_screen` | — | `Composer.render()` base/front split; `_base_dirty` (distinct from existing `dirty`) | `_render_native()` fallback; `try/except` | `SetHardwareCursor`/`MoveHardwareCursor` (register in `_KINDS`); backend-aware `apply_command`; startup detection |
+| `drm_display` | — | — | — | Thin new C bindings only: GEM dumb-buffer allocation, `drmModeSetCursor2`, `drmModeMoveCursor` exposed as Python methods on `Screen` |
+| `drm_screen` | — | `Composer.render()` base/front split; `_base_dirty` (distinct from existing `dirty`) | `_render_native()` fallback; `try/except` | **Main feature owner**: `SetHardwareCursor`/`MoveHardwareCursor` commands (register in `_KINDS`); `DrmDisplayBackend.set_cursor()`/`move_cursor()` wrappers (`backend.py`); cursor detection + `_using_hw_cursor` in `ScreenService`; fallback to software cursor |
 | `drm_touch` | — | — | — | `fan_out()` `cursor_command_factory` param (default stays `SetPointer`) |
 | `drm_composer` | SVG branch in `_paste_image()` (painter.py:115) | — | — | — |
 | `drm_resvg` | **new package** | — | — | — |
