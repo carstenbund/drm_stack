@@ -291,17 +291,26 @@ Add `integration/assets/test.svg` — a minimal 10×10 red square:
 
 ### Dependency chain after Stage 1
 
-```
-setup.sh install order:
-  drm_display    (no change)
-  drm_resvg      (NEW — Rust build, standalone)
-  drm_screen     (no change)
-  drm_touch      (no change)
-  drm_composer   (changed: SVG branch in _paste_image; depends on drm_resvg at runtime)
+The change is **entirely inside `drm_composer`** — no other stack package is
+affected. `drm_resvg` is simply a new pip dependency of `drm_composer`, not a
+sibling stack package. It can be published to PyPI (or installed from a local
+build) and listed in `drm_composer/setup.py`:
+
+```python
+# drm_composer/setup.py — add to install_requires
+"drm-resvg",   # optional: absent → SVG falls back to placeholder, same as missing PNG
 ```
 
-`drm_resvg` is an optional dependency of `drm_composer`: if the package is absent
-the fallback placeholder path is taken (same behavior as a missing PNG).
+`setup.sh` does not need to clone a new repo — `pip install -e ./drm_composer`
+pulls `drm-resvg` like any other dependency.
+
+```
+setup.sh install order (unchanged):
+  drm_display    (no change)
+  drm_screen     (no change)
+  drm_touch      (no change)
+  drm_composer   (changed: SVG branch in _paste_image; drm-resvg added as dependency)
+```
 
 ---
 
