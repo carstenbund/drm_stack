@@ -150,21 +150,60 @@ Also needs the **`input`** group (`sudo usermod -aG input $USER`, then re-login)
 to read `/dev/input/event*`.  `drm_touch` auto-detects: touchscreen → composite
 (VMs that split motion/buttons) → absolute pointer → mouse.
 
+### Sudoku — a whole app made of layers
+
+The demo with actual state: a playable, uniquely-solvable sudoku with a digit
+pad and live per-digit stats.  Tap a cell, tap a digit; clashes turn red on both
+ends; each pad key carries a nine-pip meter of how many of that digit are down.
+
+```bash
+make sudoku-demo                                              # touch / mouse, real display
+.venv/bin/python integration/sudoku_demo.py --difficulty hard --seed 7
+.venv/bin/python integration/sudoku_demo.py --selftest         # headless, plays a seeded board
+```
+
+It is the worked example of what the layer model is *for*:
+
+- **Only the top layers are alive.**  The board is inert paint at z=0; every
+  touchable thing is a `<button>`, which `drm_composer` lifts into its own
+  interactive layer 1000 above its parent.  The 81 cell keys and the 9 digit
+  keys float above a board that can never be hit.
+- **Painting is proportional to what changed.**  Selecting a cell repaints no
+  cell at all — the highlight is one cell-sized layer moved with `SetPosition`,
+  the same trick as the cursor overlay.  Entering a digit re-compiles only the
+  cells whose look changed, and layers are cut to the size of what they show
+  rather than stamped screen-sized (worth ~2x a frame at 1024x600).
+- **z-order is the modal.**  Solving the board puts a scrim at z=3000 over cell
+  keys at z=1010, so taps stop reaching the game because something is on top of
+  them — no flag, no input capture.
+
+The rules live in `integration/sudoku.py` (pure logic, no `drm_*` imports) and
+the pixels in `integration/sudoku_demo.py` — the same split the stack itself
+draws between deciding a scene and drawing one.
+
 ## Layout
 
 ```
 drm_stack/
   README.md                 # this file — the canonical stack overview
   setup.sh                  # clone + editable-install bootstrap
-  Makefile                  # setup / test / demo / screen-demo / mouse-demo / clean
+  Makefile                  # setup / test / demo / *-demo / clean
   pytest.ini                # integration test config
   integration/
     conftest.py             # headless fixtures (synchronous render)
     test_pipeline.py        # output-path integration tests
     test_input.py           # input-path integration tests (drm_touch → hit_test)
+    test_pages.py           # <button>/<a> → interactive layer, page navigation
+    test_actions.py         # hit_id grammar + the Dispatcher allowlist
+    test_html_compat.py     # the screen-HTML subset drm_composer accepts
+    test_sudoku.py          # the sudoku model + its layer contract
     stack_demo.py           # headless end-to-end demo (HTML → display)
     screen_demo.py          # interactive output demo (real display, Enter to step)
     mouse_demo.py           # interactive input demo (real display, touch/mouse)
+    page_demo.py            # HTML page navigation: slideshows, photos, back stack
+    action_demo.py          # buttons emitting cmd:<action>, allowlist enforced
+    sudoku.py               # sudoku rules — pure logic, no drm_* imports
+    sudoku_demo.py          # sudoku on the stack: layered board + digit pad
   drm_display/   (cloned, untracked here)
   drm_screen/    (cloned, untracked here)
   drm_touch/     (cloned, untracked here)

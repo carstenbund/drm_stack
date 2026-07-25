@@ -25,5 +25,8 @@ page-demo:        ## full-chain HTML page-navigation app on the REAL display (sl
 action-demo:      ## buttons emitting cmd:<action>, with the Dispatcher allowlist (REAL display)
 	$(PY) integration/action_demo.py
 
+sudoku-demo:      ## playable sudoku — layered board, digit pad with stats (REAL display)
+	$(PY) integration/sudoku_demo.py
+
 clean:            ## drop the venv and generated frames
 	rm -rf $(VENV) integration/*_frame.png
