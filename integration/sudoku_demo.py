@@ -104,6 +104,9 @@ C_TRANSPARENT = "#00000000"
 CONTROLS = (("erase", "Erase", "#4a5162"), ("hint", "Hint", "#7a6320"),
             ("new", "New", "#2a6cae"), ("quit", "Quit", "#a33a3a"))
 
+# Smallest type the panel text will shrink to before the layout reflows instead.
+_MIN_TEXT = 11
+
 
 # ── markup helpers (screen-HTML is just text; these keep the scenes readable) ──
 
@@ -163,14 +166,16 @@ class Layout:
 
     def key_tile(self, digit: int) -> tuple[int, int, int, int]:
         """The 3x3 pad tile for `digit` — the key sits on top, the pips below."""
-        _, top, _, height = self.band(0.30, 0.45)
+        _, top, _, height = self.band(0.28, 0.42)
         k = digit - 1
         return (self.px + (k % 3) * (self.pw // 3),
                 top + (k // 3) * (height // 3),
                 self.pw // 3, height // 3)
 
     def control(self, k: int) -> tuple[int, int, int, int]:
-        _, top, _, height = self.band(0.79, 0.15)
+        # A fifth of the panel for four controls: on a 3.5" panel that is the
+        # difference between a 14px-tall button and a tappable 23px one.
+        _, top, _, height = self.band(0.72, 0.21)
         w, h = self.pw // 2, height // 2
         return (self.px + (k % 2) * w + self.gap, top + (k // 2) * h + self.gap,
                 w - 2 * self.gap, h - 2 * self.gap)
@@ -353,33 +358,57 @@ class SudokuApp:
                             size=int(key_h * 0.62)))
         for k, (action, label, color) in enumerate(CONTROLS):
             x, y, w, h = L.control(k)
+            size = max(_MIN_TEXT, int(h * 0.45))
             # Quit keeps the bare-id form the other demos use (hit_id "quit");
             # the rest go through cmd: so they sit behind the command allowlist.
             if action == "quit":
                 out.append(f'<button id="quit" x="{x}" y="{y}" w="{w}" h="{h}" '
-                           f'color="{color}" size="{int(h * 0.4)}">{label}</button>')
+                           f'color="{color}" size="{size}">{label}</button>')
             else:
-                out.append(_key(action, x, y, w, h, label, color, size=int(h * 0.4)))
+                out.append(_key(action, x, y, w, h, label, color, size=size))
         return self._screen(f'<layer id="keys" z="{Z_KEYS}" visible="false">'
                             f'{"".join(out)}</layer>')
 
     def _hud_scene(self) -> str:
         """Live counters — a strip of the panel, so a tick of the clock
-        re-blends a few thousand pixels rather than the whole screen."""
+        re-blends a few thousand pixels rather than the whole screen.
+
+        Reflows to fit: one counter per line where there is room, two columns of
+        two (with shortened labels) where there is not.  A 480x320 3.5" panel
+        gives this strip about 40 pixels of height, which is the case that
+        decides the layout.
+        """
         L = self.lay
         conflicts = len(self.puzzle.conflicts())
-        rows = [("filled", f"{self.puzzle.filled()} / {CELLS}", C_LABEL),
-                ("conflicts", str(conflicts), C_CONFLICT if conflicts else C_LABEL),
-                ("moves", str(self.puzzle.moves), C_LABEL),
-                ("time", _mmss(self.elapsed()), C_LABEL)]
+        filled = f"{self.puzzle.filled()} / {CELLS}"
+        rows = [("filled", "fill", filled, filled.replace(" ", ""), C_LABEL),
+                ("conflicts", "clash", str(conflicts), str(conflicts),
+                 C_CONFLICT if conflicts else C_LABEL),
+                ("moves", "move", str(self.puzzle.moves), str(self.puzzle.moves),
+                 C_LABEL),
+                ("time", "time", _mmss(self.elapsed()), _mmss(self.elapsed()),
+                 C_LABEL)]
 
         def body(ox, oy, w, h):
-            size = max(11, int(h / (len(rows) * 1.35)))   # all four rows must fit
+            cols = 1 if int(h / (len(rows) * 1.35)) >= _MIN_TEXT else 2
+            per_col = -(-len(rows) // cols)
+            col_w, narrow = w // cols, cols > 1
+            pad = L.gap * 2
+            labels = [r[1] if narrow else r[0] for r in rows]
+            values = [r[3] if narrow else r[2] for r in rows]
+            # Fit vertically, and keep the widest label+value pair inside a column.
+            room = max(len(a) + len(b) + 1 for a, b in zip(labels, values))
+            size = max(_MIN_TEXT - 2, min(int(h / (per_col * 1.35)),
+                                          int((col_w - 2 * pad) / (room * 0.58))))
             out = []
-            for k, (label, value, color) in enumerate(rows):
-                ry = k * int(size * 1.35)
-                out.append(_text(L.gap * 2, ry, size, C_MUTED, label))
-                out.append(_text(int(w * 0.52), ry, size, color, value))
+            for k, (label, value) in enumerate(zip(labels, values)):
+                cx = (k // per_col) * col_w
+                ry = (k % per_col) * int(size * 1.35)
+                out.append(_text(cx + pad, ry, size, C_MUTED, label))
+                # values are right-aligned, so they line up and can never run
+                # into the next column (0.62em is a safe over-estimate for digits)
+                vw = int(len(value) * size * 0.62)
+                out.append(_text(cx + col_w - pad - vw, ry, size, rows[k][4], value))
             return "".join(out)
 
         return self._component("hud", Z_HUD, self.lay.hud_rect(), body)
@@ -530,7 +559,7 @@ class SudokuApp:
 
     def erase(self) -> None:
         if self.sel is None or self.puzzle.is_given(self.sel):
-            return self._note("pick one of your own digits")
+            return self._note("pick one of your digits")
         self.puzzle.clear(self.sel)
         self.note = ""
         self._commit()
@@ -749,6 +778,54 @@ def run_selftest():
     return 0
 
 
+def run_benchmark(args):
+    """Time the work a move costs, on the dummy backend — no display needed.
+
+    Runs entirely on the CPU path (compile + composite), so it is safe over SSH
+    and measures the thing that actually decides whether a small board feels
+    responsive.  `drm_screen` re-blends every visible layer per frame, so the
+    number scales with pixel count: check it at your panel's real resolution.
+    """
+    W = args.width or 480
+    H = args.height or 320
+    backend = DrmDisplayBackend(device="dummy", width=W, height=H)
+    service = ScreenService(backend)
+    app = SudokuApp(service, difficulty=args.difficulty, seed=args.seed or 1)
+
+    t0 = time.monotonic()
+    app.new_game()
+    service.render_once()
+    boot = (time.monotonic() - t0) * 1000
+
+    empty = [i for i in range(CELLS) if not app.puzzle.givens[i]]
+    moves, compile_ms, render_ms = 0, 0.0, 0.0
+    for i in empty[:args.benchmark]:
+        app.select(i)
+        service.render_once()
+        t = time.monotonic()
+        app.place(app.puzzle.solution[i])          # compile: diff + scene -> commands
+        compile_ms += (time.monotonic() - t) * 1000
+        t = time.monotonic()
+        service.render_once()                      # composite: layers -> frame
+        render_ms += (time.monotonic() - t) * 1000
+        moves += 1
+    service.stop()
+
+    per = (compile_ms + render_ms) / max(1, moves)
+    print(f"sudoku benchmark @ {W}x{H}  ({moves} moves)")
+    print(f"  first frame     {boot:7.1f} ms   (board + 81 cell keys + pad)")
+    print(f"  compile / move  {compile_ms / max(1, moves):7.1f} ms   (scene -> commands)")
+    print(f"  composite/move  {render_ms / max(1, moves):7.1f} ms   (layers -> frame)")
+    print(f"  total    / move {per:7.1f} ms   -> {1000 / per:.1f} moves/s")
+    if per > 400:
+        print("  verdict: sluggish but playable — try a smaller panel, or a Pi Zero 2 W")
+    elif per > 150:
+        print("  verdict: fine for a turn-based game (a tap costs one frame)")
+    else:
+        print("  verdict: snappy")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -762,8 +839,15 @@ def main():
     ap.add_argument("--source", default=None,
                     choices=["touch", "composite", "abs", "mouse", "dummy"])
     ap.add_argument("--selftest", action="store_true", help="headless scripted game")
+    ap.add_argument("--benchmark", type=int, nargs="?", const=12, metavar="MOVES",
+                    help="time a move at --width/--height (default 480x320); "
+                         "headless, safe over SSH")
     args = ap.parse_args()
-    return run_selftest() if args.selftest else run_real(args)
+    if args.selftest:
+        return run_selftest()
+    if args.benchmark:
+        return run_benchmark(args)
+    return run_real(args)
 
 
 if __name__ == "__main__":

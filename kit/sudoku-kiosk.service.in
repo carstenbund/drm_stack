@@ -1,0 +1,33 @@
+# Template — kit/install.sh substitutes @USER@ / @DIR@ / @DIFFICULTY@ and
+# installs the result as /etc/systemd/system/sudoku-kiosk.service.
+#
+#   systemctl status sudoku-kiosk      is it running
+#   journalctl -u sudoku-kiosk -f      what it is saying
+#   systemctl stop sudoku-kiosk        release the display (before running by hand)
+#
+# Note there is no display server here and no getty to fight with: the process
+# opens /dev/dri/cardN directly and is the only DRM client on the machine.  That
+# is also why a desktop session must not be installed — it would take the master
+# lock and this unit would render into nothing, without an error.
+
+[Unit]
+Description=drm_stack sudoku (direct to DRM, no display server)
+Documentation=https://github.com/carstenbund/drm_stack
+After=multi-user.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python @DIR@/integration/sudoku_demo.py --difficulty @DIFFICULTY@
+
+# The panel may not be probed yet on a cold boot, and the game exits when you
+# tap Quit — in a kiosk both should just come back.
+Restart=always
+RestartSec=2
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

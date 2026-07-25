@@ -181,6 +181,24 @@ The rules live in `integration/sudoku.py` (pure logic, no `drm_*` imports) and
 the pixels in `integration/sudoku_demo.py` — the same split the stack itself
 draws between deciding a scene and drawing one.
 
+### Build it as a kit
+
+`kit/` turns that demo into a guided maker build — a Pi Zero, a small
+touchscreen, and one install command:
+
+```bash
+ssh pi@sudoku.local
+curl -fsSL https://raw.githubusercontent.com/carstenbund/drm_stack/main/kit/install.sh \
+  | bash -s -- --display hdmi
+```
+
+[`kit/BOM.md`](kit/BOM.md) (parts, three price points),
+[`kit/ASSEMBLY.md`](kit/ASSEMBLY.md) (soldering the 40-pin header),
+[`kit/DISPLAY.md`](kit/DISPLAY.md) (**read before buying a panel** — it must
+present as a DRM device), [`kit/install.sh`](kit/install.sh) and
+[`kit/verify.sh`](kit/verify.sh) ("why is my screen black", in order of
+likelihood).
+
 ## Layout
 
 ```
@@ -204,6 +222,13 @@ drm_stack/
     action_demo.py          # buttons emitting cmd:<action>, allowlist enforced
     sudoku.py               # sudoku rules — pure logic, no drm_* imports
     sudoku_demo.py          # sudoku on the stack: layered board + digit pad
+  kit/                      # the sudoku demo as a guided maker build
+    README.md               # solder -> flash -> remote install -> plug in and go
+    BOM.md                  # parts, three price points, performance notes
+    ASSEMBLY.md             # soldering the 40-pin header, and the checks
+    DISPLAY.md              # picking a panel: it must present as a DRM device
+    install.sh              # one command on the Pi (drivers, repos, autostart)
+    verify.sh               # diagnose a black screen; benchmark the board
   drm_display/   (cloned, untracked here)
   drm_screen/    (cloned, untracked here)
   drm_touch/     (cloned, untracked here)
