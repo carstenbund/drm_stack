@@ -15,16 +15,29 @@ ls /dev/dri/          # you need a cardN here — no cardN, no picture
 
 Two consequences worth knowing up front:
 
-**A `/dev/fb1` panel will not work.**  Plenty of cheap SPI displays are driven by
-the legacy `fbtft` stack (overlays named `piscreen`, `waveshare35a`, `tft35a`,
-`flexfb`…), which gives you `/dev/fb1` and no DRM device.  `drm_display` does
-have a framebuffer fallback, but as written it only ever opens `/dev/fb0` (the
-device list in `screen.py` is hardcoded to `card0 → card1 → /dev/fb0 → dummy`),
-and it memory-maps the panel assuming **4 bytes per pixel** while an fbtft panel
-is almost always 16-bit RGB565.  Neither `/dev/fb1` nor 16 bpp is reachable
-today, so an fbtft panel is a dead end for this stack unless you extend
-`drm_display` — the two things to change are that candidate list and the
-`shape=(h, w, 4)` memmap in `fb_display.py`.
+**A `/dev/fb1` panel needs a patch first.**  Plenty of cheap SPI displays are
+driven by the legacy `fbtft` stack (overlays named `piscreen`, `waveshare35a`,
+`tft35a`, `flexfb`…), which gives you `/dev/fb1` and no DRM device.  Stock
+`drm_display` cannot use it: the device list in `screen.py` is hardcoded to
+`card0 → card1 → /dev/fb0 → dummy`, so `fb1` is never tried, and the framebuffer
+backend memory-maps assuming **4 bytes per pixel** while an fbtft panel is
+almost always 16-bit RGB565.
+
+[`patches/drm_display-fbdev.patch`](patches/README.md) fixes both, plus RGB565
+packing and line stride, and it is applied for you by:
+
+```bash
+./kit/install.sh --patch-fbdev
+```
+
+With it, an fbtft SPI panel is a supported option and you can skip the
+`mipi-dbi-spi` route below entirely.  Without it, the row in the table stands.
+
+While you are here, the same patch removes a trap worth knowing about even on an
+HDMI build: unpatched, `FBDisplay` swallows every error, so a *missing*
+framebuffer falls back to a 1920x1080 array in RAM and reports
+`Display: /dev/fb0 (1920x1080)` while rendering nowhere.  **That exact line —
+`fb0` at 1920x1080 — means nothing is connected.**
 
 **No compositor may be running.**  `drm_display` never calls `drmSetMaster`; it
 relies on being the only DRM client.  If X11, Wayland, or a desktop session holds
@@ -39,11 +52,12 @@ error anywhere.  Install **Raspberry Pi OS Lite** and this never comes up.
 | **DSI** (official 7" touch display) | `dtoverlay=vc4-kms-dsi-7inch` | ✅ | Best picture, includes touch over I²C. Ribbon only, no GPIO. |
 | **DPI** (parallel RGB — Hyperpixel and similar) | vendor overlay, or `vc4-kms-dpi-generic` + timings | ✅ | Eats ~28 GPIOs. Timings are panel-specific — use the vendor's overlay if there is one. |
 | **SPI via a DRM driver** (`mipi-dbi-spi`, or a `drm/tiny` driver) | see below | ✅ | The route for a 3.5" SPI panel. Slow bus, but this game repaints small regions. |
-| **SPI via fbtft** (`piscreen`, `waveshare35a`, …) | — | ❌ | `/dev/fb1`, 16 bpp. Not usable — see above. |
+| **SPI via fbtft** (`piscreen`, `waveshare35a`, …) | vendor overlay | ❌ → ✅ | `/dev/fb1` at 16 bpp: needs `install.sh --patch-fbdev` ([why](patches/README.md)). Easiest route for a cheap 3.5". |
 
 Nothing about the *hardware* differs between the last two rows.  The same 3.5"
-ILI9486 panel is a dead end or a working display depending on which driver you
-bind it to.  That is the whole game.
+ILI9486 panel is a DRM device or a framebuffer depending on which driver you bind
+it to — and with the fbdev patch, either one works.  Pick whichever your board's
+vendor overlay already does, which for most cheap 3.5" panels is `fbtft`.
 
 ## Identify what you have
 

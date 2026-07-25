@@ -25,6 +25,7 @@ RUN_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 DISPLAY_PROFILE="keep"
 DIFFICULTY="medium"
 AUTOSTART=1
+PATCH_FBDEV=0
 DRY_RUN=0
 MARK_BEGIN="# >>> drm_stack sudoku kit >>>"
 MARK_END="# <<< drm_stack sudoku kit <<<"
@@ -40,13 +41,16 @@ usage: install.sh [options]
   --dir PATH         install location (default: ~/drm_stack)
   --user NAME        account that runs the game (default: invoking user)
   --difficulty NAME  easy | medium | hard   (default: medium)
+  --patch-fbdev      apply kit/patches/drm_display-fbdev.patch, which makes an
+                     SPI panel on /dev/fb1 (fbtft, 16bpp) work
   --no-autostart     skip the systemd unit; run the game by hand
   --dry-run          print what would happen, change nothing
   -h, --help         this
 
 examples:
   ./install.sh --display hdmi
-  ./install.sh --display keep --no-autostart      # SPI panel, configure by hand
+  ./install.sh --display keep --patch-fbdev      # 3.5" SPI panel under fbtft
+  ./install.sh --display keep --no-autostart     # configure the panel by hand
 EOF
 }
 
@@ -62,6 +66,7 @@ while [ $# -gt 0 ]; do
         --dir)        DIR="${2:?}"; shift 2 ;;
         --user)       RUN_USER="${2:?}"; shift 2 ;;
         --difficulty) DIFFICULTY="${2:?}"; shift 2 ;;
+        --patch-fbdev) PATCH_FBDEV=1; shift ;;
         --no-autostart) AUTOSTART=0; shift ;;
         --dry-run)    DRY_RUN=1; shift ;;
         -h|--help)    usage; exit 0 ;;
@@ -139,6 +144,26 @@ fi
 
 log "running setup.sh (clones drm_display, drm_screen, drm_touch, drm_composer)"
 run env -C "$DIR" ./setup.sh
+
+# ── 2b. optional: fbdev support for an SPI panel on /dev/fb1 ─────────────────
+
+if [ "$PATCH_FBDEV" = 1 ]; then
+    PATCH="$DIR/kit/patches/drm_display-fbdev.patch"
+    if [ "$DRY_RUN" = 1 ]; then
+        printf '     would apply: %s\n' "$PATCH"
+    elif [ ! -f "$PATCH" ]; then
+        warn "$PATCH not found — skipping"
+    elif git -C "$DIR/drm_display" apply --check --reverse "$PATCH" 2>/dev/null; then
+        log "fbdev patch already applied"
+    elif git -C "$DIR/drm_display" apply "$PATCH"; then
+        log "applied fbdev patch — /dev/fbN panels are now usable"
+        "$DIR/.venv/bin/python" -m pytest -q "$DIR/drm_display/tests/test_fb_display.py" \
+            2>/dev/null | tail -1 || warn "install pytest to run the patch's tests"
+    else
+        die "fbdev patch did not apply — drm_display has moved on.
+       See $DIR/kit/patches/README.md"
+    fi
+fi
 
 # ── 3. verify the DRM backend actually built ─────────────────────────────────
 

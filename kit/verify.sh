@@ -22,15 +22,40 @@ head_ "system"
 printf '  %s\n' "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null || echo 'unknown model')"
 printf '  %s\n' "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") — $(uname -rm)"
 
-head_ "1. a DRM device exists"
+head_ "1. a device to render to"
 shopt -s nullglob
 cards=(/dev/dri/card*)
+fbs=(/dev/fb*)
+FBDEV_PATCHED=0
+if [ -d "$DIR/drm_display" ] && \
+   git -C "$DIR/drm_display" apply --check --reverse \
+       "$DIR/kit/patches/drm_display-fbdev.patch" 2>/dev/null; then
+    FBDEV_PATCHED=1
+fi
+
 if [ ${#cards[@]} -gt 0 ]; then
-    ok "found ${cards[*]}"
+    ok "DRM: ${cards[*]}"
+elif [ ${#fbs[@]} -gt 0 ] && [ "$FBDEV_PATCHED" = 1 ]; then
+    ok "no DRM card, but ${fbs[*]} and the fbdev patch is applied"
+    for fb in "${fbs[@]}"; do
+        n=$(basename "$fb")
+        printf '       %s: %s, %s, %s bpp\n' "$n" \
+            "$(cat "/sys/class/graphics/$n/name" 2>/dev/null || echo '?')" \
+            "$(cat "/sys/class/graphics/$n/virtual_size" 2>/dev/null || echo '?')" \
+            "$(cat "/sys/class/graphics/$n/bits_per_pixel" 2>/dev/null || echo '?')"
+    done
+    hmm "pass the panel explicitly if auto-detect picks the wrong one: --device ${fbs[0]}"
+elif [ ${#fbs[@]} -gt 0 ]; then
+    no "only ${fbs[*]} — a framebuffer panel, which needs the fbdev patch:
+         ./kit/install.sh --patch-fbdev     (see kit/patches/README.md)
+       or put the panel on DRM instead (kit/DISPLAY.md)"
 else
-    no "/dev/dri is empty — nothing can be rendered.  See kit/DISPLAY.md"
-    fbs=(/dev/fb*)
-    [ ${#fbs[@]} -gt 0 ] && hmm "you do have ${fbs[*]} — an fbtft panel, which this stack cannot drive (kit/DISPLAY.md)"
+    no "no /dev/dri/card* and no /dev/fb* — nothing can be rendered.  See kit/DISPLAY.md"
+fi
+if [ "$FBDEV_PATCHED" = 0 ]; then
+    hmm "fbdev patch not applied: unpatched, a missing framebuffer reports
+       'Display: /dev/fb0 (1920x1080)' and renders into RAM.  That exact line —
+       fb0 at 1920x1080 — means nothing is connected."
 fi
 
 head_ "2. nothing else is holding the display"

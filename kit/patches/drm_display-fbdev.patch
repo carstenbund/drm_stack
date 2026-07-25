@@ -1,0 +1,588 @@
+diff --git a/drm_display/fb_display.py b/drm_display/fb_display.py
+index 4ab722b..908e495 100644
+--- a/drm_display/fb_display.py
++++ b/drm_display/fb_display.py
+@@ -1,60 +1,191 @@
++"""Framebuffer backend — render to any ``/dev/fbN``.
++
++Reads the panel's real geometry, colour depth and line stride from sysfs and
++packs each frame into the format the device actually wants.  That makes the
++cheap 16-bit SPI TFTs usable (ILI9486 / ILI9341 / ST7735 under ``fbtft``, which
++land on ``/dev/fb1`` at RGB565) alongside the 32-bit fbdev emulation a KMS
++driver exposes as ``/dev/fb0``.
++
++Deliberately strict: if the device is missing, unreadable, or in a format this
++backend cannot pack, the constructor **raises**.  A display backend that
++silently succeeds is worse than no backend at all — it renders an entire
++session into anonymous memory and looks exactly like dead hardware.
++``DBDisplay`` is the only backend allowed to always work, and you have to ask
++for it by name.
++
++Byte order is assumed little-endian (Raspberry Pi, x86): the 16-bit packer
++writes the low byte first, which is what an RGB565 framebuffer expects there.
++"""
++
++import os
++
+ import numpy as np
+ 
++#: Where the kernel publishes framebuffer geometry.  Module level so tests can
++#: point it at a fixture tree.
++SYSFS_ROOT = "/sys/class/graphics"
++
++#: Colour depths this backend can pack a BGRA canvas into.
++SUPPORTED_BPP = (16, 24, 32)
++
+ 
+ class FBDisplay(object):
++    """A memory-mapped ``/dev/fbN``.
++
++    Canvases are BGRA ``(H, W, 4)`` uint8 — the canonical layout everywhere in
++    this package — and are converted here to whatever the panel runs at.
++    """
++
+     def __init__(self, display="/dev/fb0", width=None, height=None):
+-        # width/height are accepted for API compatibility with DRMDisplay but
+-        # ignored — actual size is always read from the framebuffer device.
+         self.display = display
+-        self.screen_width, self.screen_height = self.get_screen_size(display)
++        self.node = os.path.basename(str(display).rstrip("/"))
++        if not self.node.startswith("fb"):
++            raise ValueError(f"{display!r} is not a framebuffer device node")
++
++        sysfs_w, sysfs_h = self.get_screen_size(display)
++        # width/height override what sysfs reports — an escape hatch for panels
++        # whose virtual size is not their visible size.  Normally leave them None.
++        self.screen_width = int(width or sysfs_w)
++        self.screen_height = int(height or sysfs_h)
++
++        self.bpp = self._read_int("bits_per_pixel", 32)
++        if self.bpp not in SUPPORTED_BPP:
++            raise ValueError(
++                f"{display}: {self.bpp} bits per pixel is not supported "
++                f"(this backend packs {SUPPORTED_BPP})")
++        self.bytes_per_pixel = self.bpp // 8
++
++        # Lines are often padded, so the stride is authoritative — not width*bpp.
++        self.stride = self._read_int(
++            "stride", self.screen_width * self.bytes_per_pixel)
++        if self.stride < self.screen_width * self.bytes_per_pixel:
++            raise ValueError(
++                f"{display}: stride {self.stride} is too small for "
++                f"{self.screen_width}px at {self.bpp}bpp")
++
++        self.driver = self._read("name") or "unknown"
+         self.fb = self.setup_display(display)
+ 
+-    def get_screen_size(self, display, size=(1920, 1080)):
++    # ── sysfs ────────────────────────────────────────────────────────────────
++
++    def _attr(self, name):
++        return os.path.join(SYSFS_ROOT, self.node, name)
++
++    def _read(self, name):
++        try:
++            with open(self._attr(name)) as fh:
++                return fh.read().strip()
++        except OSError:
++            return None
++
++    def _read_int(self, name, default):
+         try:
+-            display = display[5:]
+-            #print(display)
+-            fb_name = '/sys/class/graphics/' + display + '/virtual_size'
+-            #print(fb_name)
+-            with open(fb_name, 'r') as file:
+-                screen = file.read().strip().split(',')
+-                #print(f"Screen size reported: ${screen}")
+-        except:
+-            screen = size
+-        width, height = screen
+-        return int(width), int(height)
++            return int(self._read(name))
++        except (TypeError, ValueError):
++            return default
++
++    def get_screen_size(self, display=None):
++        """(width, height) from sysfs.  Raises if the device is not there.
++
++        The old signature defaulted to 1920x1080 when sysfs was unreadable,
++        which turned "no such panel" into a plausible-looking display.  It now
++        raises instead: an absent device has to be an error somebody sees.
++        """
++        raw = self._read("virtual_size")
++        if raw is None:
++            raise OSError(
++                f"{self.display}: cannot read {self._attr('virtual_size')} — the "
++                f"device does not exist, or is not a framebuffer")
++        try:
++            width, height = (int(v) for v in raw.split(",")[:2])
++        except ValueError as exc:
++            raise OSError(
++                f"{self.display}: unreadable virtual_size {raw!r}") from exc
++        return width, height
+ 
+     def setup_display(self, display=None):
+-        if display is not None:
+-            try:
+-                print(f"Set up display: {display}")
+-                fb = np.memmap(display, dtype='uint8', mode='w+', shape=(self.screen_height, self.screen_width, 4))
+-            except:
+-                fb = np.zeros((self.screen_height, self.screen_width, 4), dtype='uint8')
+-        else:
+-            fb = np.zeros((self.screen_height, self.screen_width, 4), dtype='uint8')
+-
+-        print(fb.shape)
+-        return fb
++        """mmap the visible area.  Read-write, so this needs the video group."""
++        try:
++            return np.memmap(display or self.display, dtype=np.uint8, mode="r+",
++                             shape=(self.screen_height, self.stride))
++        except (OSError, ValueError) as exc:
++            raise OSError(
++                f"cannot map {self.display}: {exc}\n"
++                f"  wanted {self.screen_width}x{self.screen_height} @ {self.bpp}bpp, "
++                f"stride {self.stride} = {self.screen_height * self.stride} bytes\n"
++                f"  a permission error here usually means: usermod -aG video $USER"
++            ) from exc
+ 
+-    def clear(self):
+-        self.fb[:] = 0
++    # ── pixel packing ────────────────────────────────────────────────────────
++
++    @staticmethod
++    def _rgb565(bgra):
++        """BGRA uint8 -> RGB565 uint16 (5 bits red, 6 green, 5 blue)."""
++        b = bgra[..., 0].astype(np.uint16)
++        g = bgra[..., 1].astype(np.uint16)
++        r = bgra[..., 2].astype(np.uint16)
++        return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
++
++    def _pack(self, bgra):
++        """BGRA -> the device's format, contiguous, (h, w * bytes_per_pixel)."""
++        h, w = bgra.shape[:2]
++        if self.bpp == 32:
++            return np.ascontiguousarray(bgra[..., :4]).reshape(h, w * 4)
++        if self.bpp == 24:
++            return np.ascontiguousarray(bgra[..., :3]).reshape(h, w * 3)
++        # 16bpp: .view() lays each pixel down low byte first (little-endian)
++        return np.ascontiguousarray(self._rgb565(bgra)).view(np.uint8).reshape(h, w * 2)
++
++    # ── the backend interface ────────────────────────────────────────────────
+ 
+     def send_full_image(self, canvas):
+-        self.fb[:canvas.shape[0], :canvas.shape[1], :4] = canvas
+-    
++        """Blit a BGRA canvas at the origin, clipped to the panel."""
++        self.send_partial_image(canvas, 0, 0)
++
++    def send_partial_image(self, data, x=0, y=0):
++        """Blit a BGRA region at (x, y).
++
++        Partial writes are what make an SPI panel bearable: there the bus, not
++        the CPU, is the bottleneck, and fbtft's deferred IO only pushes out the
++        pages that were actually touched.
++        """
++        if self.fb is None:
++            raise RuntimeError(f"{self.display} is closed")
++        x, y = max(0, int(x)), max(0, int(y))
++        h = min(data.shape[0], self.screen_height - y)
++        w = min(data.shape[1], self.screen_width - x)
++        if h <= 0 or w <= 0:
++            return
++        bp = self.bytes_per_pixel
++        # Write a column slice of the mapped rows: everything outside the rect,
++        # line padding included, is left exactly as it was.
++        self.fb[y:y + h, x * bp:(x + w) * bp] = self._pack(data[:h, :w])
++
++    def clear(self):
++        if self.fb is not None:
++            self.fb[:] = 0
++
+     def close(self):
+-        self.clear()
+-        self.fb = None
++        if self.fb is not None:
++            self.clear()
++            self.fb.flush()
++            self.fb = None
++
++    def __repr__(self):
++        return (f"<FBDisplay {self.display} {self.screen_width}x{self.screen_height}"
++                f" @{self.bpp}bpp stride={self.stride} driver={self.driver}>")
++
+ 
+-# Example main function for testing purposes
+ if __name__ == "__main__":
+-    display = FBDisplay("/dev/fb0")
++    import sys
++
++    dev = sys.argv[1] if len(sys.argv) > 1 else "/dev/fb0"
++    display = FBDisplay(dev)
++    print(display)
+     try:
+-        # Example: fill the screen with a specific color
+-        blue =np.arange(display.screen_height*display.screen_width*4, dtype='uint8').reshape(display.screen_height,display.screen_width,4)
+-        blue[:] = [255,8,8,0]
+-        display.send_full_image(blue)
+-        pass
++        canvas = np.zeros((display.screen_height, display.screen_width, 4), np.uint8)
++        canvas[:, :, 2] = 255          # BGRA -> red, so a blue screen means
++        display.send_full_image(canvas)  # the channel order is wrong somewhere
++        input("red? [enter]")
+     finally:
+         display.close()
+-
+diff --git a/drm_display/screen.py b/drm_display/screen.py
+index 2631391..d632ab5 100644
+--- a/drm_display/screen.py
++++ b/drm_display/screen.py
+@@ -1,11 +1,13 @@
+ """
+ screen.py — unified display interface that auto-detects available backends.
+ 
+-Priority order:
+-  1. /dev/dri/card0  (DRM/KMS — preferred, works with modern CVM/KVM drivers)
+-  2. /dev/dri/card1  (second DRM card)
+-  3. /dev/fb0        (legacy framebuffer — kept for compatibility)
+-  4. dummy           (headless numpy buffer — always succeeds)
++Auto-detection order:
++  1. every /dev/dri/card*  (DRM/KMS — preferred)
++  2. every /dev/fb*        (framebuffer, including a panel on fb1)
++  3. dummy                 (headless numpy buffer — always succeeds)
++
++Both lists are enumerated rather than hardcoded, so a second DRM card or a
++framebuffer that is not fb0 is reachable.
+ 
+ Usage::
+ 
+@@ -14,12 +16,20 @@ Usage::
+ 
+     screen = Screen()                         # auto-detect
+     screen = Screen(device="/dev/dri/card0")  # force a specific backend
++    screen = Screen(device="/dev/fb1")        # e.g. an SPI panel under fbtft
+ 
+     canvas = np.zeros((screen.screen_height, screen.screen_width, 4), dtype=np.uint8)
+     screen.show(canvas)
+     screen.show_image(img_array)             # scales + centres any (h,w,3/4) array
++
++A named device is honoured exactly: if it cannot be opened, the error is
++raised rather than swallowed by a fallback.  Only auto-detection falls back,
++and it says loudly when it ends up rendering into memory.
+ """
+ 
++import glob
++import os
++
+ import numpy as np
+ 
+ from .drm_display import DRMDisplay
+@@ -59,21 +69,48 @@ class Screen:
+         self._last_image = None
+         self._init_display()
+ 
++    @staticmethod
++    def backend_for(device):
++        """Which backend class drives `device`."""
++        if str(device).startswith("/dev/dri/"):
++            return DRMDisplay
++        if os.path.basename(str(device)).startswith("fb"):
++            return FBDisplay
++        if device == "dummy":
++            return DBDisplay
++        raise ValueError(
++            f"cannot tell which backend {device!r} needs — expected "
++            f"/dev/dri/cardN, /dev/fbN, or 'dummy'")
++
++    @staticmethod
++    def _autodetect():
++        """Every device worth trying, best first."""
++        found = [(p, DRMDisplay) for p in sorted(glob.glob("/dev/dri/card*"))]
++        found += [(p, FBDisplay) for p in sorted(glob.glob("/dev/fb*"))]
++        return found + [("dummy", DBDisplay)]
++
++    def _open(self, device_path, DisplayClass):
++        self.display = DisplayClass(device_path, self._req_width, self._req_height)
++        self.screen_width = self.display.screen_width
++        self.screen_height = self.display.screen_height
++        detail = getattr(self.display, "driver", None)
++        print(f"Display: {device_path} ({self.screen_width}x{self.screen_height})"
++              + (f" [{detail}]" if detail else ""))
++
+     def _init_display(self):
+-        candidates = [
+-            ("/dev/dri/card0", DRMDisplay),
+-            ("/dev/dri/card1", DRMDisplay),
+-            ("/dev/fb0",       FBDisplay),
+-            ("dummy",          DBDisplay),
+-        ]
+-        for device_path, DisplayClass in candidates:
+-            if self.device and self.device != device_path:
+-                continue
++        # A named device is a decision, not a hint: open it or fail with the
++        # real reason.  Falling back here is how you end up debugging a blank
++        # panel that reported success.
++        if self.device:
++            self._open(self.device, self.backend_for(self.device))
++            return
++
++        for device_path, DisplayClass in self._autodetect():
+             try:
+-                self.display = DisplayClass(device_path, self._req_width, self._req_height)
+-                self.screen_width = self.display.screen_width
+-                self.screen_height = self.display.screen_height
+-                print(f"Display: {device_path} ({self.screen_width}x{self.screen_height})")
++                self._open(device_path, DisplayClass)
++                if DisplayClass is DBDisplay:
++                    print("  WARNING: no display device found — rendering into "
++                          "memory.  Nothing will appear on any screen.")
+                 return
+             except Exception as e:
+                 print(f"  {device_path}: {e}")
+diff --git a/tests/test_fb_display.py b/tests/test_fb_display.py
+new file mode 100644
+index 0000000..c51ac6e
+--- /dev/null
++++ b/tests/test_fb_display.py
+@@ -0,0 +1,240 @@
++"""FBDisplay — geometry from sysfs, pixel packing, and refusing to fake it.
++
++No hardware: a fixture builds a sysfs tree and a file the size of the panel's
++memory, and FBDisplay maps that.  mmap on a regular file behaves like mmap on a
++framebuffer for everything these tests assert (offsets, stride, packing), so the
++byte layout checked here is the layout a real panel receives.
++
++    pytest tests/test_fb_display.py
++"""
++
++import numpy as np
++import pytest
++
++from drm_display import fb_display
++from drm_display.fb_display import FBDisplay
++from drm_display.screen import Screen
++from drm_display.db_display import DBDisplay
++
++
++@pytest.fixture
++def panel(tmp_path, monkeypatch):
++    """Build a fake framebuffer; returns a factory -> (device_path, FBDisplay)."""
++    monkeypatch.setattr(fb_display, "SYSFS_ROOT", str(tmp_path / "sys"))
++
++    def make(width=8, height=4, bpp=16, stride=None, name="fb_ili9486",
++             node="fb1", create=True, attrs=True):
++        stride = stride if stride is not None else width * bpp // 8
++        if attrs:
++            sysfs = tmp_path / "sys" / node
++            sysfs.mkdir(parents=True)
++            (sysfs / "virtual_size").write_text(f"{width},{height}\n")
++            (sysfs / "bits_per_pixel").write_text(f"{bpp}\n")
++            (sysfs / "stride").write_text(f"{stride}\n")
++            (sysfs / "name").write_text(f"{name}\n")
++        dev = tmp_path / "dev" / node
++        dev.parent.mkdir(parents=True, exist_ok=True)
++        if create:
++            dev.write_bytes(b"\x00" * (stride * height))
++        return str(dev)
++
++    return make
++
++
++def _bgra(h, w, b, g, r, a=255):
++    canvas = np.zeros((h, w, 4), np.uint8)
++    canvas[..., 0], canvas[..., 1], canvas[..., 2], canvas[..., 3] = b, g, r, a
++    return canvas
++
++
++# ── it refuses to invent a display ───────────────────────────────────────────
++
++def test_missing_device_raises_instead_of_faking_1920x1080(panel):
++    # the old behaviour: unreadable sysfs -> 1920x1080 -> a mmap that fails ->
++    # a numpy array in RAM -> "Display: /dev/fb0 (1920x1080)" and a black panel
++    dev = panel(create=False, attrs=False)
++    with pytest.raises(OSError, match="does not exist, or is not a framebuffer"):
++        FBDisplay(dev)
++
++
++def test_device_node_absent_raises(panel):
++    dev = panel(create=False)                 # sysfs present, device file gone
++    with pytest.raises(OSError, match="cannot map"):
++        FBDisplay(dev)
++
++
++def test_non_framebuffer_path_rejected():
++    with pytest.raises(ValueError, match="not a framebuffer device node"):
++        FBDisplay("/dev/dri/card0")
++
++
++def test_unsupported_depth_rejected(panel):
++    dev = panel(bpp=8, stride=8)
++    with pytest.raises(ValueError, match="8 bits per pixel is not supported"):
++        FBDisplay(dev)
++
++
++def test_stride_smaller_than_a_row_rejected(panel):
++    dev = panel(width=8, bpp=16, stride=4)    # 8px at 16bpp needs 16 bytes
++    with pytest.raises(ValueError, match="stride 4 is too small"):
++        FBDisplay(dev)
++
++
++# ── geometry ─────────────────────────────────────────────────────────────────
++
++def test_reads_geometry_depth_and_driver_from_sysfs(panel):
++    dev = panel(width=480, height=320, bpp=16, name="fb_ili9486")
++    fb = FBDisplay(dev)
++    assert (fb.screen_width, fb.screen_height) == (480, 320)
++    assert fb.bpp == 16 and fb.bytes_per_pixel == 2
++    assert fb.stride == 960
++    assert fb.driver == "fb_ili9486"          # tells fbtft apart from vc4drmfb
++    fb.close()
++
++
++def test_explicit_size_overrides_sysfs(panel):
++    dev = panel(width=8, height=4, bpp=32, stride=32)
++    fb = FBDisplay(dev, width=8, height=2)    # panel lies about virtual height
++    assert (fb.screen_width, fb.screen_height) == (8, 2)
++    fb.close()
++
++
++# ── packing ──────────────────────────────────────────────────────────────────
++
++def test_rgb565_packs_channels_into_the_right_bits():
++    pack = FBDisplay._rgb565
++    assert pack(_bgra(1, 1, 0, 0, 255))[0, 0] == 0xF800      # red
++    assert pack(_bgra(1, 1, 0, 255, 0))[0, 0] == 0x07E0      # green
++    assert pack(_bgra(1, 1, 255, 0, 0))[0, 0] == 0x001F      # blue
++    assert pack(_bgra(1, 1, 255, 255, 255))[0, 0] == 0xFFFF  # white
++    assert pack(_bgra(1, 1, 0, 0, 0))[0, 0] == 0x0000        # black
++
++
++def test_16bpp_writes_little_endian_pairs(panel):
++    dev = panel(width=2, height=1, bpp=16)
++    fb = FBDisplay(dev)
++    fb.send_full_image(_bgra(1, 2, 0, 0, 255))               # two red pixels
++    fb.fb.flush()
++    # 0xF800 little-endian is 00 F8
++    assert bytes(open(dev, "rb").read(4)) == b"\x00\xf8\x00\xf8"
++    fb.close()
++
++
++def test_32bpp_writes_bgra_untouched(panel):
++    dev = panel(width=2, height=1, bpp=32, stride=8)
++    fb = FBDisplay(dev)
++    fb.send_full_image(_bgra(1, 2, 1, 2, 3, 4))
++    fb.fb.flush()
++    assert bytes(open(dev, "rb").read(8)) == bytes([1, 2, 3, 4, 1, 2, 3, 4])
++    fb.close()
++
++
++def test_24bpp_drops_alpha(panel):
++    dev = panel(width=2, height=1, bpp=24, stride=6)
++    fb = FBDisplay(dev)
++    fb.send_full_image(_bgra(1, 2, 1, 2, 3, 255))
++    fb.fb.flush()
++    assert bytes(open(dev, "rb").read(6)) == bytes([1, 2, 3, 1, 2, 3])
++    fb.close()
++
++
++# ── stride and clipping ──────────────────────────────────────────────────────
++
++def test_line_padding_is_never_written(panel):
++    # 4px at 16bpp = 8 bytes of pixels, but the line is 12 bytes long
++    dev = panel(width=4, height=2, bpp=16, stride=12)
++    with open(dev, "wb") as fh:
++        fh.write(b"\xAA" * 24)                # poison, including the padding
++    fb = FBDisplay(dev)
++    fb.send_full_image(_bgra(2, 4, 255, 255, 255))
++    fb.fb.flush()
++    raw = open(dev, "rb").read()
++    for row in (0, 1):
++        line = raw[row * 12:(row + 1) * 12]
++        assert line[:8] == b"\xff" * 8, "pixels not written"
++        assert line[8:] == b"\xAA" * 4, "padding bytes were overwritten"
++    fb.close()
++
++
++def test_partial_update_touches_only_its_rect(panel):
++    dev = panel(width=4, height=4, bpp=16)
++    fb = FBDisplay(dev)
++    fb.clear()
++    fb.send_partial_image(_bgra(2, 2, 255, 255, 255), x=2, y=1)
++    fb.fb.flush()
++    seen = np.frombuffer(open(dev, "rb").read(), np.uint16).reshape(4, 4)
++    expected = np.zeros((4, 4), np.uint16)
++    expected[1:3, 2:4] = 0xFFFF
++    assert np.array_equal(seen, expected)
++    fb.close()
++
++
++def test_oversized_canvas_is_clipped_not_an_error(panel):
++    dev = panel(width=4, height=2, bpp=16)
++    fb = FBDisplay(dev)
++    fb.send_full_image(_bgra(10, 10, 255, 255, 255))      # bigger than the panel
++    fb.fb.flush()
++    assert len(open(dev, "rb").read()) == 16              # nothing grew
++    fb.close()
++
++
++def test_fully_offscreen_blit_is_a_noop(panel):
++    dev = panel(width=4, height=2, bpp=16)
++    fb = FBDisplay(dev)
++    fb.send_partial_image(_bgra(2, 2, 255, 255, 255), x=99, y=99)
++    fb.fb.flush()
++    assert set(open(dev, "rb").read()) == {0}
++    fb.close()
++
++
++def test_writing_after_close_is_an_error_not_a_silent_noop(panel):
++    fb = FBDisplay(panel())
++    fb.close()
++    with pytest.raises(RuntimeError, match="closed"):
++        fb.send_full_image(_bgra(1, 1, 0, 0, 0))
++
++
++# ── Screen dispatch ──────────────────────────────────────────────────────────
++
++def test_screen_opens_a_named_framebuffer_that_is_not_fb0(panel):
++    dev = panel(width=8, height=4, bpp=16, node="fb1")
++    screen = Screen(device=dev)               # the case that used to be unreachable
++    assert isinstance(screen.display, FBDisplay)
++    assert screen.get_screen_size() == (8, 4)
++    screen.close()
++
++
++def test_screen_raises_the_real_error_for_a_named_device(panel):
++    dev = panel(create=False)
++    with pytest.raises(OSError, match="cannot map"):
++        Screen(device=dev)                    # not "No suitable display backend"
++
++
++def test_backend_for_maps_paths_to_classes():
++    from drm_display.drm_display import DRMDisplay
++    assert Screen.backend_for("/dev/dri/card1") is DRMDisplay
++    assert Screen.backend_for("/dev/fb7") is FBDisplay
++    assert Screen.backend_for("dummy") is DBDisplay
++    with pytest.raises(ValueError, match="cannot tell which backend"):
++        Screen.backend_for("/dev/sda")
++
++
++def test_autodetect_enumerates_every_card_and_fb(monkeypatch):
++    import drm_display.screen as screen_mod
++    from drm_display.drm_display import DRMDisplay
++    monkeypatch.setattr(screen_mod.glob, "glob", lambda pattern: {
++        "/dev/dri/card*": ["/dev/dri/card1", "/dev/dri/card0"],
++        "/dev/fb*": ["/dev/fb1", "/dev/fb0"],
++    }[pattern])
++    assert Screen._autodetect() == [
++        ("/dev/dri/card0", DRMDisplay), ("/dev/dri/card1", DRMDisplay),
++        ("/dev/fb0", FBDisplay), ("/dev/fb1", FBDisplay),
++        ("dummy", DBDisplay),
++    ]
++
++
++def test_dummy_fallback_is_announced(monkeypatch, capsys):
++    import drm_display.screen as screen_mod
++    monkeypatch.setattr(screen_mod.glob, "glob", lambda pattern: [])
++    Screen()
++    assert "WARNING" in capsys.readouterr().out
