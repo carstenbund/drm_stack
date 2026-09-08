@@ -14,6 +14,9 @@ cd "$(dirname "$0")"
 GH=https://github.com/carstenbund
 # package dir : repo name (dependency order matters)
 PACKAGES=(drm_display drm_screen drm_touch drm_composer)
+# Optional: installed only if already cloned beside the others. A renderer
+# plugin is by definition something the stack runs without.
+OPTIONAL=(drm_screen_lvgl)
 
 echo "== clone missing packages =="
 for pkg in "${PACKAGES[@]}"; do
@@ -39,6 +42,12 @@ echo "== editable install (dependency order) =="
 for pkg in "${PACKAGES[@]}"; do
     echo "  pip install -e ./$pkg"
     python -m pip install --quiet -e "./$pkg"
+done
+for pkg in "${OPTIONAL[@]}"; do
+    if [ -d "$pkg" ]; then
+        echo "  pip install -e ./$pkg  (optional)"
+        python -m pip install --quiet -e "./$pkg"
+    fi
 done
 python -m pip install --quiet pillow   # needed by drm_screen.assets / drm_composer.painter
 python -m pip install --quiet pytest   # dev: stack integration suite

@@ -12,6 +12,7 @@ Per-package implementation instructions (self-contained, actionable):
 | `drm_touch` | [`docs/drm_touch.md`](docs/drm_touch.md) | Stage 5 — `fan_out` extension |
 | `drm_resvg` *(new)* | [`docs/drm_resvg.md`](docs/drm_resvg.md) | Stage 1 — Rust/PyO3 SVG renderer |
 | `drm_screen_native` *(new)* | [`docs/drm_screen_native.md`](docs/drm_screen_native.md) | Stage 4 — Rust/PyO3 compositor |
+| `drm_screen_lvgl` *(new)* | [`docs/drm_screen_lvgl.md`](docs/drm_screen_lvgl.md) | Stage 4b — LVGL renderer plugin, vector scene layers |
 
 This document covers: execution order, cross-package dependencies, profiling
 strategy, integration tests, and verified API baseline.
@@ -1121,6 +1122,63 @@ never removes, integration test coverage.
 
 ---
 
+## Stage 4b — LVGL Renderer Plugin (`drm_screen_lvgl`)
+
+### Goal
+
+Stage 4 moves the blend into Rust. This stage asks whether a frame has to be
+**formed** at all. Where LVGL is available it holds the layers itself,
+composites its own dirty rectangles, and presents through DRM/KMS — so nothing
+recomposites a whole screen because a badge moved, the RGBA→BGRA conversion has
+nobody to serve, and a layer can carry a description instead of pixels.
+
+```
+rgba   commands → numpy layers → whole-frame blend → RGBA→BGRA → drm_display → KMS
+lvgl   commands → LVGL objects → LVGL's dirty-area composite               → KMS
+```
+
+Full detail: [`docs/drm_screen_lvgl.md`](docs/drm_screen_lvgl.md).
+
+### What changes where
+
+| Package | Change |
+|---|---|
+| `drm_screen` | `renderers.py` — the `Renderer` protocol, capability names, `RgbaRenderer` wrapping the existing path, entry-point discovery. `ScreenService(renderer=…, renderer_options=…, clock=…)`. New commands `PlaceScene` / `SetOpacity`, and `UnsupportedCommand` so a screen refuses rather than drops |
+| `drm_screen_lvgl` | **new package** — the plugin, registered as the `lvgl` entry point |
+| `drm_composer` | `<path>` and `<animate>`; a layer of paths compiles to `PlaceScene` carrying a `drm_scene_ir` document instead of a bitmap |
+| `drm_display` | none |
+| `drm_touch` | none — `SetPointer` reaches the plugin's pointer overlay unchanged |
+| `drm_stack` | `setup.sh` installs the plugin when present; `test_lvgl_renderer.py` |
+
+### Relationship to Stage 4
+
+They are not alternatives, and neither blocks the other. Stage 4 makes the RGBA
+path faster on machines that have no LVGL; Stage 4b removes the need for that
+path on machines that do. Both live behind the same seam, and `rgba` stays the
+default in both.
+
+### Fallback
+
+The rule is the same as Stage 4's, one level up: `renderer="auto"` gives a
+caller that passed a backend exactly the path it has always had. A plugin that
+cannot import — or whose `available()` says its native library is missing — is
+not offered, so nothing degrades on a machine without LVGL. `drm_composer`'s
+`<path>` is the one thing with no fallback: the RGBA compositor raises
+`UnsupportedCommand`, because a stroke that is half drawn cannot be expressed as
+pixels by definition.
+
+### Measured (reference host, software rasterization, no GPU)
+
+| | 1280×800 | 1920×1080 | 2560×1600 | 4096×2160 |
+|---|---|---|---|---|
+| ms per frame | 0.7 | 1.5 | 2.8 | 6.2 |
+| fps | 1323 | 625 | 331 | 135 |
+
+A full-screen animated scene layer from a 1.4 KB document, with no bitmap in the
+path at any point.
+
+---
+
 ## Makefile additions
 
 ```makefile
@@ -1139,21 +1197,26 @@ native-test:
 # Stage 5
 hw-cursor-test:
 	.venv/bin/pytest integration/test_hw_cursor.py -v
+
+# Stage 4b
+lvgl-test:
+	.venv/bin/pytest integration/test_lvgl_renderer.py -v
 ```
 
 ---
 
 ## Summary: What Changes in Each Package
 
-| Package | Stage 1 | Stage 2 | Stage 4 | Stage 5 |
-|---|---|---|---|---|
-| `drm_display` | — | — | — | Thin new C bindings only: GEM dumb-buffer allocation, `drmModeSetCursor2`, `drmModeMoveCursor` exposed as Python methods on `Screen` |
-| `drm_screen` | — | `Composer.render()` base/front split; `_base_dirty` (distinct from existing `dirty`) | `_render_native()` fallback; `try/except` | **Main feature owner**: `SetHardwareCursor`/`MoveHardwareCursor` commands (register in `_KINDS`); `DrmDisplayBackend.set_cursor()`/`move_cursor()` wrappers (`backend.py`); cursor detection + `_using_hw_cursor` in `ScreenService`; fallback to software cursor |
-| `drm_touch` | — | — | — | `fan_out()` `cursor_command_factory` param (default stays `SetPointer`) |
-| `drm_composer` | SVG branch in `_paste_image()` (painter.py:115) | — | — | — |
-| `drm_resvg` | **new package** | — | — | — |
-| `drm_screen_native` | — | — | **new package** | — |
-| `drm_stack` (umbrella) | `test_svg.py`; `assets/test.svg`; `setup.sh` | `test_cursor_split.py` | `test_native_compositor.py` | `test_hw_cursor.py` |
+| Package | Stage 1 | Stage 2 | Stage 4 | Stage 4b | Stage 5 |
+|---|---|---|---|---|---|
+| `drm_display` | — | — | — | — | Thin new C bindings only: GEM dumb-buffer allocation, `drmModeSetCursor2`, `drmModeMoveCursor` exposed as Python methods on `Screen` |
+| `drm_screen` | — | `Composer.render()` base/front split; `_base_dirty` (distinct from existing `dirty`) | `_render_native()` fallback; `try/except` | `renderers.py` (Renderer protocol, RgbaRenderer, entry-point discovery); `ScreenService(renderer=…)`; `PlaceScene`/`SetOpacity`/`UnsupportedCommand` | **Main feature owner**: `SetHardwareCursor`/`MoveHardwareCursor` commands (register in `_KINDS`); `DrmDisplayBackend.set_cursor()`/`move_cursor()` wrappers (`backend.py`); cursor detection + `_using_hw_cursor` in `ScreenService`; fallback to software cursor |
+| `drm_touch` | — | — | — | — | `fan_out()` `cursor_command_factory` param (default stays `SetPointer`) |
+| `drm_composer` | SVG branch in `_paste_image()` (painter.py:115) | — | — | `<path>` / `<animate>`; `scene_ir.py`; vector layers compile to `PlaceScene` | — |
+| `drm_resvg` | **new package** | — | — | — | — |
+| `drm_screen_native` | — | — | **new package** | — | — |
+| `drm_screen_lvgl` | — | — | — | **new package** | — |
+| `drm_stack` (umbrella) | `test_svg.py`; `assets/test.svg`; `setup.sh` | `test_cursor_split.py` | `test_native_compositor.py` | `test_lvgl_renderer.py`; `setup.sh` optional package | `test_hw_cursor.py` |
 
 The key property of this plan is that each stage is **independently mergeable**:
 no stage breaks existing behavior, every stage adds a tested capability, and the
