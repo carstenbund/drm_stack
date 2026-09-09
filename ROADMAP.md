@@ -1144,7 +1144,7 @@ Full detail: [`docs/drm_screen_lvgl.md`](docs/drm_screen_lvgl.md).
 | Package | Change |
 |---|---|
 | `drm_screen` | `renderers.py` — the `Renderer` protocol, capability names, `RgbaRenderer` wrapping the existing path, entry-point discovery. `ScreenService(renderer=…, renderer_options=…, clock=…)`. New commands `PlaceScene` / `SetOpacity`, and `UnsupportedCommand` so a screen refuses rather than drops |
-| `drm_screen_lvgl` | **new package** — the plugin, registered as the `lvgl` entry point |
+| `drm_screen_lvgl` | **new package** — the plugin, registered as the `lvgl` entry point. `SetSceneOffset` gives each layer a clock of its own, which is what a wall of panels needs and a single screen does not |
 | `drm_composer` | `<path>` and `<animate>`; a layer of paths compiles to `PlaceScene` carrying a `drm_scene_ir` document instead of a bitmap |
 | `drm_display` | none |
 | `drm_touch` | none — `SetPointer` reaches the plugin's pointer overlay unchanged |
@@ -1176,6 +1176,20 @@ pixels by definition.
 
 A full-screen animated scene layer from a 1.4 KB document, with no bitmap in the
 path at any point.
+
+A sixteen-layer wall at 1920×1080 — every layer its own scene, its own clock and
+its own schedule, with `drm_touch` driving the pointer — holds **300 fps at
+2.8 ms**, sustained. Per-layer clocks cost nothing measurable: the screen is
+still rendered once per frame.
+
+### Downstream
+
+[`mementum-lcd`](https://github.com/carstenbund/mementum-lcd) now consumes the
+stack rather than shadowing it, and drives it from a control server ported from
+`mementum-led` — the same route table, so an LED matrix and an LCD panel can
+take the same cue on one wall. It is the first real exercise of `PlaceScene`,
+per-layer clocks, and `drm_composer`'s `<path>`/`<animate>` output reaching an
+ESP32 player unchanged.
 
 ---
 

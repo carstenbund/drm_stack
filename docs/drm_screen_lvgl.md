@@ -48,6 +48,35 @@ own canvas being composited onto the root; a full-screen scene layer with
 nothing under it can draw into the display's layer directly, which has not been
 done because 320 fps has not needed it.
 
+**Sixteen layers, sixteen clocks.** A four-by-four wall of independent scene
+layers at 1920×1080, each evaluated and drawn from paths every frame, holds
+**300 fps at 2.8 ms** — sustained over a minute, with `drm_touch` driving the
+pointer overlay and `hit_test` turning clicks into per-layer events. Adding
+per-layer clocks (below) cost nothing measurable, because the screen is still
+rendered exactly once per frame.
+
+## Per-layer clocks
+
+A screen is rendered once, at one time. That is right while the wall is one
+picture and wrong the moment it is not — panels starting one after another, a
+sentence dealt across them, a word travelling from one to the next.
+
+```python
+service.submit([
+    PlaceScene("panel-3", scene),
+    SetSceneOffset("panel-3", 3000.0),      # this layer is three seconds behind
+])
+```
+
+A layer with an offset is evaluated at `scene_time - offset`; everything else
+is unchanged, nothing is rendered twice, and a command addressed to one layer
+cannot disturb another's time. Underneath it is `mm_screen_layer_offset()` in
+the native library, one field and one subtraction.
+
+This is what a *distributed* composition needs, and it is the difference
+between a video wall showing one picture and a wall of panels that happen to
+stand together. `drm_composer` has no way to say it yet — see below.
+
 ## Changes in `drm_screen` (done)
 
 | | |
@@ -83,10 +112,34 @@ the scene format is being settled, and is found through `DRM_SCREEN_LVGL_LIB`
 or `MEMENTUM_SRC`. It moves into this repo's build when `drm_scene_ir` is
 versioned.
 
+## Downstream
+
+[`mementum-lcd`](https://github.com/carstenbund/mementum-lcd) is the first user
+and is worth reading as one: it dropped its own copy of this API, consumes
+`drm_screen` + `drm_screen_lvgl` through a thin adapter, and drives them from a
+show controller that is itself a port of `mementum-led`'s Pi server — same
+routes, same parameters, so an LED matrix and an LCD panel can stand on one
+wall and take the same cue.
+
+What that exercises, and therefore what this plugin is now tested against:
+
+* a scene layer per panel, sixteen of them, each with its own clock and its own
+  schedule;
+* `PlaceScene` documents produced by `drm_composer` from `<path>`/`<animate>`
+  and by a handwriting compiler, loaded unchanged by the ESP32 player;
+* `StartRipple` — a local disturbance of a scene layer's ink, which is that
+  project's addition to the vocabulary rather than this stack's, and stays
+  there until it has earned a place here.
+
 ## Not done
 
 - **Scene layer straight to the display layer** — skip the intermediate canvas
   when a scene layer covers the screen (3.1 ms → ~1.5 ms at 1080p).
+- **Per-layer timing in markup** — the renderer takes an offset per layer and
+  `drm_composer` cannot express one. A `<layer stagger="…">` (or the whole
+  vocabulary `mementum-led` already uses for this: `auto`, `tile`, a time, plus
+  `factor`, `reverse` and an explicit panel order) would put a distributed
+  composition in a document rather than in an application's code.
 - **`<symbol src="…svg">`** — an SVG converter, not a parser branch: outlines
   must become ordered stroke data before they can be *drawn* rather than filled.
 - **Transforms and deformations in markup** — the renderer has them; the
